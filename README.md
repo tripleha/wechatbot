@@ -1,0 +1,2 @@
+# wechatbot
+from urinx/weixinbot
