@@ -1,4 +1,6 @@
-# wxbot_project_py2.7
+# WechatBot project transfer from https://github.com/urinx/weixinbot
+
+https://github.com/tripleha/wechatbot
 
 目录结构:
 ```bash
