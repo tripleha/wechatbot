@@ -1,7 +1,7 @@
 # WechatBot project transfer from https://github.com/urinx/weixinbot
 
 https://github.com/tripleha/wechatbot
-
+try
 目录结构:
 ```bash
 .
