@@ -41,67 +41,74 @@ class WeChat(WXAPI):
     def __init__(self, host='wx.qq.com'):
         super(WeChat, self).__init__(host)
 
-        self.db = None
-        self.save_data_folder = ''  # 保存图片，语音，小视频的文件夹
-        self.last_login = 0  # 上次退出的时间
-        self.time_out = 5  # 同步时间间隔（单位：秒）
-        self.msg_handler = None
+        # self.save_data_folder = ''  # 保存图片，语音，小视频的文件夹   # 用途？
+        # self.last_login = 0  # 上次退出的时间
+        self.time_out = 2  # 同步时间间隔（单位：秒）
+        # 此设置并不是越短越好
         self.start_time = time.time()
+        self.msg_handler = None
         self.bot = None
 
         cm = ConfigManager()
-        self.save_data_folders = cm.get_wechat_media_dir()
-        self.cookie_file = cm.get_cookie()
-        self.pickle_file = cm.get_pickle_files()
+        self.save_data_folders = cm.get_wechat_media_dir()  # 上面存在同名无用变量
         self.log_mode = cm.get('setting', 'log_mode') == 'True'
         self.exit_code = 0
 
     def start(self):
-        echo(Constant.LOG_MSG_START)
-        run(Constant.LOG_MSG_RECOVER, self.recover)
+        # echo(Constant.LOG_MSG_START)
+        # run(Constant.LOG_MSG_RECOVER, self.recover)
 
-        timeOut = time.time() - self.last_login
-        echo(Constant.LOG_MSG_TRY_INIT)
-        if self.webwxinit():
-            echo(Constant.LOG_MSG_SUCCESS)
-            run(Constant.LOG_MSG_RECOVER_CONTACT, self.recover_contacts)
-        else:
-            echo(Constant.LOG_MSG_FAIL)
+        # timeOut = time.time() - self.last_login
+        # echo(Constant.LOG_MSG_TRY_INIT)
+        # if self.webwxinit():
+        #     echo(Constant.LOG_MSG_SUCCESS)
+        #     run(Constant.LOG_MSG_RECOVER_CONTACT, self.recover_contacts)
+        # else:
+            # 若本地信息无法初始化微信，则需要进行重新登录
+            # 上面属于未登出状态重新启动的处理
+            # 正常来说都应该进行二维码验证
+            # 上面处理在不需要进行帐号信息本地存储的状态下可以注释
 
-            while True:
-                # first try to login by uin without qrcode
-                echo(Constant.LOG_MSG_ASSOCIATION_LOGIN)
-                if self.association_login():
-                    echo(Constant.LOG_MSG_SUCCESS)
-                else:
-                    echo(Constant.LOG_MSG_FAIL)
-                    # scan qrcode to login
-                    run(Constant.LOG_MSG_GET_UUID, self.getuuid)
-                    echo(Constant.LOG_MSG_GET_QRCODE)
-                    self.genqrcode()
-                    echo(Constant.LOG_MSG_SCAN_QRCODE)
+            # echo(Constant.LOG_MSG_FAIL)
 
-                if not self.waitforlogin():
-                    continue
-                echo(Constant.LOG_MSG_CONFIRM_LOGIN)
-                if not self.waitforlogin(0):
-                    continue
-                break
+        while True:
+            # first try to login by uin without qrcode
+            # echo(Constant.LOG_MSG_ASSOCIATION_LOGIN)
+            # if self.association_login():
+                # echo(Constant.LOG_MSG_SUCCESS)
+            # else:
+            # echo(Constant.LOG_MSG_FAIL)
+            # scan qrcode to login
 
-            run(Constant.LOG_MSG_LOGIN, self.login)
-            run(Constant.LOG_MSG_INIT, self.webwxinit)
-            run(Constant.LOG_MSG_STATUS_NOTIFY, self.webwxstatusnotify)
-            run(Constant.LOG_MSG_GET_CONTACT, self.webwxgetcontact)
-            echo(Constant.LOG_MSG_CONTACT_COUNT % (
-                    self.MemberCount, len(self.MemberList)
-                ))
-            echo(Constant.LOG_MSG_OTHER_CONTACT_COUNT % (
-                    len(self.GroupList), len(self.ContactList),
-                    len(self.SpecialUsersList), len(self.PublicUsersList)
-                ))
-            run(Constant.LOG_MSG_GET_GROUP_MEMBER, self.fetch_group_contacts)
+            # 正常扫描二维码登录步骤
 
-        run(Constant.LOG_MSG_SNAPSHOT, self.snapshot)
+            run(Constant.LOG_MSG_GET_UUID, self.getuuid)
+            echo(Constant.LOG_MSG_GET_QRCODE)
+            self.genqrcode()
+            echo(Constant.LOG_MSG_SCAN_QRCODE)
+
+            if not self.waitforlogin():
+                continue
+            echo(Constant.LOG_MSG_CONFIRM_LOGIN)
+            if not self.waitforlogin(0):
+                continue
+            break
+
+        run(Constant.LOG_MSG_LOGIN, self.login)
+        run(Constant.LOG_MSG_INIT, self.webwxinit)
+        run(Constant.LOG_MSG_STATUS_NOTIFY, self.webwxstatusnotify)
+        run(Constant.LOG_MSG_GET_CONTACT, self.webwxgetcontact)
+        echo(Constant.LOG_MSG_CONTACT_COUNT % (
+                self.MemberCount, len(self.MemberList)
+            ))
+        echo(Constant.LOG_MSG_OTHER_CONTACT_COUNT % (
+                len(self.addGroupIDList), len(self.ContactList),
+                len(self.SpecialUsersList), len(self.PublicUsersList)
+            ))
+        run(Constant.LOG_MSG_GET_GROUP_MEMBER, self.fetch_group_contacts)
+
+        # 使用对话设置cookies
+        self.cookie = self.session.cookies
 
         while True:
             [retcode, selector] = self.synccheck()
@@ -118,28 +125,27 @@ class WeChat(WXAPI):
                 echo(Constant.LOG_MSG_QUIT_ON_PHONE)
                 break
             elif retcode == '0':
-                if selector == '2':
+                if selector == '2' or selector == '4':
+                    # 有新消息
                     r = self.webwxsync()
-                    if r is not None:
-                        try:
-                            self.handle_msg(r)
-                        except:
-                            Log.error(traceback.format_exc())
-                elif selector == '7':
-                    r = self.webwxsync()
-                elif selector == '0':
-                    time.sleep(self.time_out)
-                elif selector == '4':
+                    # 获取新消息的内容
                     # 保存群聊到通讯录
                     # 修改群名称
                     # 新增或删除联系人
                     # 群聊成员数目变化
-                    r = self.webwxsync()
                     if r is not None:
                         try:
+                            echo('into handle_mod\n')
                             self.handle_mod(r)
                         except:
                             Log.error(traceback.format_exc())
+                elif selector == '7':
+                    # 进出聊天界面
+                    r = self.webwxsync()
+                elif selector == '0':
+                    # 无更新
+                    echo('no new info\n')
+                    time.sleep(self.time_out)
                 elif selector == '3' or selector == '6':
                     break
             else:
@@ -150,29 +156,11 @@ class WeChat(WXAPI):
             if self.msg_handler:
                 self.msg_handler.check_schedule_task()
 
-            # 添加定时推送机器人
-            # 可以修改机器人后在wechat_msg_processor中使用
-            # 原代码给出的bot是一个会定时/登录后隔一段固定时间向GroupList中所有群发送推送的机器人
-            # 定时推送功能见Bot.time_schedule()
-            # 也拥有自动回复的功能，见Bot.reply()
-
-            # 推送链接与自动回复链接在config/constant中
-            # 此处已经注释，之后需要用到可以再修改添加（此处添加的是定时推送功能）
+            # 可以添加定时推送机器人
+            # 也可以修改机器人后在wechat_msg_processor中添加
 
             if self.bot:
                 pass
-                # print 'bot in'
-                '''
-                r = self.bot.time_schedule()
-                if r:
-                    for g in self.GroupList:
-                        echo('[*] 推送 -> %s: %s' % (g['NickName'], r))
-                        g_id = g['UserName']
-                        self.webwxsendmsg(r, g_id)
-                '''
-                
-
-
 
     def get_run_time(self):
         """
@@ -187,10 +175,17 @@ class WeChat(WXAPI):
         """
         @brief      Save some data and use shell to kill this process
         """
-        run(Constant.LOG_MSG_SNAPSHOT, self.snapshot)
+        # run(Constant.LOG_MSG_SNAPSHOT, self.snapshot)
+
         echo(Constant.LOG_MSG_RUNTIME % self.get_run_time())
         # close database connect
-        self.db.close()
+        if self.msg_handler:
+            self.msg_handler.msg_db.close()
+
+        # close session
+        self.session.close()
+        if self.bot:
+            self.bot.close_session()
 
     def fetch_group_contacts(self):
         """
@@ -199,25 +194,6 @@ class WeChat(WXAPI):
         @note       This function must be finished in 180s
         """
         Log.debug('fetch_group_contacts')
-        # clean database
-        if self.msg_handler:
-            self.msg_handler.clean_db()
-
-        # sqlite
-        # ----------------------------------------------------
-        # group max_thread_num  max_fetch_group_num    time(s)
-        # 197      10                 10               108
-        # 197      10                 15               95
-        # 197      20                 10               103
-        # 197      10                 20               55
-        # 197       5                 30               39
-        # 197       4                 50               35
-        # ----------------------------------------------------
-        # mysql
-        # ----------------------------------------------------
-        # group max_thread_num  max_fetch_group_num    time(s)
-        # 197       4                 50               20
-        # ----------------------------------------------------
 
         max_thread_num = 4
         max_fetch_group_num = 50
@@ -232,34 +208,17 @@ class WeChat(WXAPI):
 
             def run(self):
                 while not self.group_list_queue.empty():
-                    g_list = self.group_list_queue.get()
-                    gid_list = []
-                    g_dict = {}
-                    for g in g_list:
-                        gid = g['UserName']
-                        gid_list.append(gid)
-                        g_dict[gid] = g
-
+                    gid_list = self.group_list_queue.get()
                     group_member_list = self.wechat.webwxbatchgetcontact(gid_list)
-
-                    for member_list in group_member_list:
-                        gid = member_list['UserName']
-                        g = g_dict[gid]
-                        g['MemberCount'] = member_list['MemberCount']
-                        g['OwnerUin'] = member_list['OwnerUin']
-                        self.wechat.GroupMemeberList[gid] = member_list['MemberList']
-
-                        # 如果使用 Mysql 则可以在多线程里操作数据库
-                        # 否则请注释下列代码在主线程里更新群列表
-                        # -----------------------------------
-                        # 处理群成员
-                        # if self.wechat.msg_handler:
-                        #     self.wechat.msg_handler.handle_group_member_list(gid, member_list['MemberList'])
-                        # -----------------------------------
+                    for member_list in group_member_list[:]:
+                        g_member_list = member_list['MemberList'][:]
+                        member_list['MemberList'] = []
+                        self.wechat.GroupList.append(member_list)
+                        self.wechat.GroupMemeberList[member_list['UserName']] = g_member_list
 
                     self.group_list_queue.task_done()
 
-        for g_list in split_array(self.GroupList, max_fetch_group_num):
+        for g_list in split_array(self.addGroupIDList, max_fetch_group_num):
             group_list_queue.put(g_list)
 
         for i in range(max_thread_num):
@@ -269,146 +228,81 @@ class WeChat(WXAPI):
 
         group_list_queue.join()
 
-        if self.msg_handler:
-            # 处理群
-            if self.GroupList:
-                self.msg_handler.handle_group_list(self.GroupList)
-
-            # 这个是用 sqlite 来存储群列表，sqlite 对多线程的支持不太好
-            # ----------------------------------------------------
-            # 处理群成员
-            for (gid, member_list) in self.GroupMemeberList.items():
-                self.msg_handler.handle_group_member_list(gid, member_list)
-            # ----------------------------------------------------
+        # 对于群成员的处理不使用数据库，直接在通过内存中的字典进行操作，
+        # 因为python对于字典的优化已经做的非常不错，通过数据库进行处理并不能显著提升性能，并没有必要
+        # 而且就时效性考虑，因为每次群ID都在变化，就算存入数据库中，在下次运行程序时依然要重新写入数据库
+        # 所以并不能节省开销
 
         return True
-
-    def snapshot(self):
-        """
-        @brief      Save basic infos for next login.
-        @return     Bool: whether operation succeed.
-        """
-        try:
-            conf = {
-                'uuid': self.uuid,
-                'redirect_uri': self.redirect_uri,
-                'uin': self.uin,
-                'sid': self.sid,
-                'skey': self.skey,
-                'pass_ticket': self.pass_ticket,
-                'synckey': self.synckey,
-                'device_id': self.device_id,
-                'last_login': time.time(),
-            }
-            cm = ConfigManager()
-            Log.debug('save wechat config')
-            cm.set_wechat_config(conf)
-
-            # save cookie
-            Log.debug('save cookie')
-            if self.cookie:
-                self.cookie.save(ignore_discard=True)
-
-            # save contacts
-            Log.debug('save contacts')
-            self.save_contacts()
-        except Exception, e:
-            Log.error(traceback.format_exc())
-            return False
-        return True
-
-    def recover(self):
-        """
-        @brief      Recover from snapshot data.
-        @return     Bool: whether operation succeed.
-        """
-        cm = ConfigManager()
-        [self.uuid, self.redirect_uri, self.uin,
-        self.sid, self.skey, self.pass_ticket,
-        self.synckey, device_id, self.last_login] = cm.get_wechat_config()
-
-        if device_id:
-            self.device_id = device_id
-
-        self.base_request = {
-            'Uin': int(self.uin),
-            'Sid': self.sid,
-            'Skey': self.skey,
-            'DeviceID': self.device_id,
-        }
-
-        # set cookie
-        Log.debug('set cookie')
-        self.cookie = set_cookie(self.cookie_file)
-
-        return True
-
-    def save_contacts(self):
-        """
-        @brief      Save contacts.
-        """
-        pickle_save(self.User, self.pickle_file['User'])
-        pickle_save(self.MemberList, self.pickle_file['MemberList'])
-        pickle_save(self.GroupList, self.pickle_file['GroupList'])
-        pickle_save(self.GroupMemeberList, self.pickle_file['GroupMemeberList'])
-        pickle_save(self.SpecialUsersList, self.pickle_file['SpecialUsersList'])
-
-    def recover_contacts(self):
-        """
-        @brief      recover contacts.
-        @return     Bool: whether operation succeed.
-        """
-        try:
-            self.User = pickle_load(self.pickle_file['User'])
-            self.MemberList = pickle_load(self.pickle_file['MemberList'])
-            self.GroupList = pickle_load(self.pickle_file['GroupList'])
-            self.GroupMemeberList = pickle_load(self.pickle_file['GroupMemeberList'])
-            self.SpecialUsersList = pickle_load(self.pickle_file['SpecialUsersList'])
-            return True
-        except Exception, e:
-            Log.error(traceback.format_exc())
-        return False
 
     def handle_mod(self, r):
+        # 说明：手机上对于通讯录所做的一些操作并不会百分之百反映到网页端
+        # 当前网页端API的返回数据还存在大量无用的变量，即仅有变量名存在，而值一直为空值
+        # 可能是微信网页端为了扩展功能而留下的
+
         # ModContactCount: 变更联系人或群聊成员数目
         # ModContactList: 变更联系人或群聊列表，或群名称改变
         Log.debug('handle modify')
-        self.handle_msg(r)
         for m in r['ModContactList']:
             if m['UserName'][:2] == '@@':
                 # group
                 in_list = False
                 g_id = m['UserName']
-                for g in self.GroupList:
+                for i in xrange(len(self.GroupList)):
                     # group member change
-                    if g_id == g['UserName']:
-                        g['MemberCount'] = m['MemberCount']
-                        g['NickName'] = m['NickName']
-                        self.GroupMemeberList[g_id] = m['MemberList']
+                    if g_id == self.GroupList[i]['UserName']:
                         in_list = True
-                        if self.msg_handler:
-                            self.msg_handler.handle_group_member_change(g_id, m['MemberList'])
+                        group = self.webwxbatchgetcontact([g_id])[0]
+                        if group:
+                            self.GroupList[i] = group
+                            self.GroupMemeberList[g_id] = group['MemberList'][:]
+                            self.GroupList[i]['MemberList'] = []
                         break
                 if not in_list:
                     # a new group
-                    self.GroupList.append(m)
-                    self.GroupMemeberList[g_id] = m['MemberList']
-                    if self.msg_handler:
-                        self.msg_handler.handle_group_list_change(m)
-                        self.msg_handler.handle_group_member_change(g_id, m['MemberList'])
+                    group = self.webwxbatchgetcontact([g_id])[0]
+                    if group:
+                        self.addGroupIDList.append(g_id)
+                        self.GroupMemeberList[g_id] = group['MemberList'][:]
+                        group['MemberList'] = []
+                        self.GroupList.append(group)
 
             elif m['UserName'][0] == '@':
                 # user
                 in_list = False
-                for u in self.MemberList:
-                    u_id = m['UserName']
-                    if u_id == u['UserName']:
-                        u = m
+                u_id = m['UserName']
+                for i in xrange(len(self.MemberList)):
+                    if u_id == self.MemberList[i]['UserName']:
+                        self.MemberList[i] = m
                         in_list = True
+
+                        if m['VerifyFlag'] & 8 != 0:  # 公众号/服务号
+                            for j in xrange(len(self.PublicUsersList)):
+                                if u_id == self.PublicUsersList[j]:
+                                    self.PublicUsersList[j] = m
+                                    break
+                        elif u_id in self.wx_conf['SpecialUsers']:  # 特殊帐号
+                            for j in xrange(len(self.SpecialUsersList)):
+                                if u_id == self.SpecialUsersList[j]:
+                                    self.SpecialUsersList[j] = m
+                                    break
+                        elif u_id != self.User['UserName']:
+                            self.ContactList.append(m)
+                            for j in xrange(len(self.ContactList)):
+                                if u_id == self.ContactList[j]:
+                                    self.ContactList[j] = m
+                                    break
                         break
                 # if don't have then add it
                 if not in_list:
                     self.MemberList.append(m)
+                    if m['VerifyFlag'] & 8 != 0:  # 公众号/服务号
+                        self.PublicUsersList.append(m)
+                    elif m['UserName'] in self.wx_conf['SpecialUsers']:  # 特殊帐号
+                        self.SpecialUsersList.append(m)
+                    elif m['UserName'] != self.User['UserName']:
+                        self.ContactList.append(m)
+        self.handle_msg(r)
 
     def handle_msg(self, r):
         """
@@ -417,11 +311,11 @@ class WeChat(WXAPI):
         @param      r  Dict: message json
         """
         Log.debug('handle message')
-        if self.msg_handler:
-            self.msg_handler.handle_wxsync(r)
 
         n = len(r['AddMsgList'])
         if n == 0:
+            # 权宜之计
+            time.sleep(self.time_out)
             return
 
         if self.log_mode:
@@ -437,15 +331,20 @@ class WeChat(WXAPI):
             if msgType == self.wx_conf['MSGTYPE_TEXT']:
                 # 地理位置消息
                 if content.find('pictype=location') != -1:
-                    location = content.split('<br/>')[1][:-1]
+                    if msg['FromUserName'][0:2] == '@@':
+                        location = content.split(':<br/>')[1]
+                    else:
+                        location = content.split(':<br/>')[0]
                     raw_msg = {
                         'raw_msg': msg,
                         'location': location,
+                        'text': location,
                         'log': Constant.LOG_MSG_LOCATION % location
                     }
                 # 普通文本消息
                 else:
-                    text = content.split(':<br/>')[-1]
+                    tmp = content.split(':<br/>')
+                    text = ':<br/>'.join(tmp[min(len(tmp) - 1, 1):])
                     raw_msg = {
                         'raw_msg': msg,
                         'text': text,
@@ -559,6 +458,12 @@ class WeChat(WXAPI):
                 raw_msg = {
                     'raw_msg': msg,
                     'log': Constant.LOG_MSG_ADD_FRIEND % name
+                }
+            elif msgType == self.wx_conf['MSGTYPE_VIDEO']:
+                # 暂时无法对该类型进行处理，即视频信息
+                raw_msg = {
+                    'raw_msg': msg,
+                    'log': Constant.LOG_MSG_UNKNOWN_MSG % (msgType, content)
                 }
             else:
                 raw_msg = {

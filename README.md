@@ -1,7 +1,9 @@
-# wxbot_project_py2.7
+# welcome to https://github.com/tripleha/wechatbot
+
+WechatBot project transfer from https://github.com/urinx/weixinbot
 
 目录结构:
-```bash
+```
 .
 ├── README.md
 ├── config
@@ -10,65 +12,35 @@
 │   ├── constant.py
 │   ├── log.py
 │   ├── requirements.txt
-│   └── wechat.conf.bak
+│   └── wechat.conf
 ├── db
 │   ├── __init__.py
-│   ├── mysql_db.py
 │   └── sqlite_db.py
-├── docker
-│   ├── Dockerfile
-│   └── README.md
-├── server
-│   ├── index.html
-│   └── upload.html
+├── test
 ├── tmp_data
+│   └── WeChat.db
 ├── wechat
 │   ├── __init__.py
 │   ├── utils.py
 │   ├── wechat.py
-│   ├── wechat_apis.py
-│   └── wechat_js_backup
-│       └── index_40649b7.js
+│   └── wechat_apis.py
 ├── weixin_bot.py
 └── wx_handler
     ├── __init__.py
     ├── bot.py
     └── wechat_msg_processor.py
 ```
+使用说明：
 
-2017.8.5
+首先需要引入一些第三方库，进入config，输入 pip install -r requirements.txt
 
-@wechat_apis.py
+返回目录，输入 python weixin_bot.py 即可运行程序
 
-原代码中发送各类信息的API应该都存在问题（未验证）
+每次启动均需要扫码，断开连接即退出程序，不会保存用户数据到本地，只保存聊天记录到数据库/tmp_data/WeChat.db
 
-已经修改了发送文字信息的API webwxsendmsg() 具体可查看该处注释
+聊天机器人功能添加至/wx_handler/bot.py，还需要在/wx_handler/wechat_msg_processor.py中添加调用
 
+数据库内容传输功能可在/wx_handler/wechat_msg_processor.py中添加
 
-@wechat.py
-
-在WeChat.start()后部可以添加定时任务，BOT定时推送功能 可查看该处注释
-
-在WeChat.handle_msg()中指出了添加自动回复的入口（注释
-
-
-@wechat_msg_processor.py
-
-专门对接收到的信息数据进行处理/数据库操作
-
-在WeChatMsgProcessor.handle_user_msg()中添加对个人聊天信息的自动回复，详见该处注释
-
-在WeChatMsgProcessor.handle_command()中对群聊中的@自己 信息进行自动回复，详见该处注释
-
-
-@bot.py
-
-对机器人进行功能添加和修改
-
-time_schedule处理定时推送，详见该处注释
-
-reply处理自动回复内容，详见该处注释
-
-内容均通过constant中的链接获取
-
+其他说明可查看代码注释
 

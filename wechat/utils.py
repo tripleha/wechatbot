@@ -12,12 +12,17 @@ import sys
 import json
 import urllib
 import urllib2
+import requests
 import cookielib
 import cPickle as pickle
 import traceback
 import time
 import hashlib
 #===================================================
+
+'''
+   一些未用到函数留做功能扩展用
+'''
 
 
 def _decode_data(data):
@@ -100,8 +105,10 @@ def run(str, func, *args):
         echo(Constant.RUN_RESULT_FAIL)
         exit()
 
+# http.get 和 http.post 方法全部使用 requests（内urllib3）库的 session对话
 
-def get(url, api=None):
+
+def get(session, url, api=None):
     """
     @brief      http get request
     @param      url   String
@@ -109,29 +116,40 @@ def get(url, api=None):
     @return     http response
     """
     Log.debug('GET -> ' + url)
-    request = urllib2.Request(url=url)
-    request.add_header(*Constant.HTTP_HEADER_CONNECTION)
-    request.add_header(*Constant.HTTP_HEADER_REFERER)
+
+    header = {}
+    header[Constant.HTTP_HEADER_CONNECTION[0]] = Constant.HTTP_HEADER_CONNECTION[1]
+    header[Constant.HTTP_HEADER_REFERER[0]] = Constant.HTTP_HEADER_REFERER[1]
+
+    # request = urllib2.Request(url=url)
+    # request.add_header(*Constant.HTTP_HEADER_CONNECTION)
+    # request.add_header(*Constant.HTTP_HEADER_REFERER)
     if api in ['webwxgetvoice', 'webwxgetvideo']:
-        request.add_header(*Constant.HTTP_HEADER_RANGE)
+        # request.add_header(*Constant.HTTP_HEADER_RANGE)
+
+        header[Constant.HTTP_HEADER_RANGE[0]] = Constant.HTTP_HEADER_RANGE[1]
 
     while True:
         try:
-            response = urllib2.urlopen(request, timeout=30)
-            data = response.read()
-            response.close()
-            if api == None:
-                Log.debug(data)
-            return data
+            r = session.get(url, headers=header)
+            return r.content
+
+            # response = urllib2.urlopen(request, timeout=30)
+            # data = response.read()
+            # response.close()
+            # if api == None:
+                # Log.debug(data)
+            # return data
         except (KeyboardInterrupt, SystemExit):
             raise
         except:
             Log.error(traceback.format_exc())
 
-        time.sleep(1)
+        time.sleep(0.5)
+        echo('re get\n')
 
 
-def post(url, params, jsonfmt=True):
+def post(session, url, params, jsonfmt=True):
     """
     @brief      http post request
     @param      url      String
@@ -141,28 +159,36 @@ def post(url, params, jsonfmt=True):
     """
     Log.debug('POST -> '+url)
     Log.debug(params)
+    header = {}
     if jsonfmt:
-        request = urllib2.Request(url=url, data=json.dumps(params, ensure_ascii=False).encode('utf8'))
-        request.add_header(*Constant.HTTP_HEADER_CONTENTTYPE)
+        # request = urllib2.Request(url=url, data=json.dumps(params, ensure_ascii=False).encode('utf8'))
+        # request.add_header(*Constant.HTTP_HEADER_CONTENTTYPE)
+        data = json.dumps(params, ensure_ascii=False).encode('utf8')
+        header[Constant.HTTP_HEADER_CONTENTTYPE[0]] = Constant.HTTP_HEADER_CONTENTTYPE[1]
     else:
-        request = urllib2.Request(url=url, data=urllib.urlencode(params))
+        # request = urllib2.Request(url=url, data=urllib.urlencode(params))
+        data = params
 
     while True:
         try:
-            response = urllib2.urlopen(request, timeout=30)
-            data = response.read()
-            response.close()
+            # response = urllib2.urlopen(request, timeout=30)
+            # data = response.read()
+            # response.close()
 
+            r = session.post(url, data=data, headers=header, timeout=5)
             if jsonfmt:
-                Log.debug(data)
-                return json.loads(data, object_hook=_decode_data)
-            return data
+                # Log.debug(data)
+                return json.loads(r.content, object_hook=_decode_data)
+                # return r.json()
+
+            return r.content
         except (KeyboardInterrupt, SystemExit):
             raise
         except:
             Log.error(traceback.format_exc())
 
-        time.sleep(1)
+        time.sleep(0.5)
+        echo('re post\n')
 
 
 def set_cookie(cookie_file):
@@ -362,4 +388,18 @@ def auto_reload(mod):
 def split_array(arr, n):
     for i in xrange(0, len(arr), n):
         yield arr[i:i+n]
+
+
+# new func for table_name trans_coding
+
+
+def trans_unicode_into_int(name):
+    result = [ord(ch) for ch in name]
+    return 'z'.join([str(ch) for ch in result])
+
+
+def trans_int_into_unicode(table):
+    tmp = table.split('z')
+    result = [unichr(int(ch)) for ch in tmp[1:]]
+    return [tmp[0], ''.join(result)]
 

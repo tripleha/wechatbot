@@ -12,8 +12,8 @@ import traceback
 
 def _dict_factory(cursor, row):
     aDict = {}
-    for iField, field in enumerate (cursor.description):
-        aDict [field [0]] = row [iField]
+    for iField, field in enumerate(cursor.description):
+        aDict[field[0]] = row[iField]
     return aDict
 
 
@@ -30,20 +30,19 @@ class SqliteDB(object):
         self.lock = threading.Lock()
 
     def set_conn(self):
-        self._conn = sqlite3.connect(self.db_file,check_same_thread=False)
+        self._conn = sqlite3.connect(self.db_file, check_same_thread=False)
 
     @property
     def conn(self):
         try:
             self._conn.execute('select 1;')
             # check out conn
-        except (sqlite3.ProgrammingError,AttributeError):
+        except (sqlite3.ProgrammingError, AttributeError):
             # Cannot operate on a closed database
             self.set_conn()
 
         finally:
             return self._conn
-
 
     def create_table(self, table, cols):
         """
@@ -151,6 +150,8 @@ class SqliteDB(object):
         self.lock.acquire()
         hasReturn = sql.lstrip().upper().startswith("SELECT")
 
+        print sql
+
         try:
             if value:
                 c.execute(sql, value)
@@ -181,9 +182,20 @@ class SqliteDB(object):
         cond = (condition,)
         self.execute(sql, cond)
 
+    # 增加查询键值最大行函数
+    def select_max(self, table, field):
+        sql = "SELECT MAX(%s) FROM %s" % (field, table)
+        Log.debug('DB -> %s' % sql)
+        result = self.execute(sql)
+        if result:
+            return result[0]['MAX(%s)' % field]
+        else:
+            return 0
+
     def close(self):
         """
         @brief      close connection to database
         """
+        self.conn.commit()
         Log.debug('DB -> close')
         self.conn.close()

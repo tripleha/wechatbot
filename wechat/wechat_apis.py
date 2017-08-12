@@ -11,6 +11,7 @@ import os
 import cookielib
 import random
 import requests
+from requests.exceptions import ReadTimeout
 import time
 import xml.dom.minidom
 # for media upload
@@ -45,7 +46,7 @@ class WXAPI(object):
 
         self.conf_factory()
 
-        self.User = []  # 登陆账号信息
+        self.User = {}  # 登陆账号信息
         self.MemberList = []  # 好友+群聊+公众号+特殊账号
         self.MemberCount = 0
         self.ContactList = []  # 好友
@@ -57,7 +58,15 @@ class WXAPI(object):
         self.PublicUsersList = []  # 公众号／服务号
         self.SpecialUsersList = []  # 特殊账号
 
+        self.addGroupIDList = []
+
+        # 以上记录的都是添加到通讯录中的联系成员，如果没有添加到通讯录中，将不会获得
+        # 群的获取用了另外的方法，一些未加入通讯录的群也可以获取了
+
         self.media_count = 0
+
+        # add session
+        self.session = requests.session()
 
     def conf_factory(self):
         e = self.wx_host  # wx.qq.com
@@ -179,7 +188,7 @@ class WXAPI(object):
             'lang': self.wx_conf['LANG'],
             '_': int(time.time()),
         }
-        data = post(url, params, False)
+        data = post(self.session, url, params, False)
         regx = r'window.QRLogin.code = (\d+); window.QRLogin.uuid = "(\S+?)"'
         pm = re.search(regx, data)
         if pm:
@@ -199,7 +208,7 @@ class WXAPI(object):
                 't': 'webwx',
                 '_': int(time.time())
             }
-            data = post(url, params, False)
+            data = post(self.session, url, params, False)
             if data == '':
                 return
             qrcode_path = save_file('qrcode.jpg', data, './')
@@ -217,7 +226,7 @@ class WXAPI(object):
         time.sleep(tip)
         url = self.wx_conf['API_login'] + '?tip=%s&uuid=%s&_=%s' % (
             tip, self.uuid, int(time.time()))
-        data = get(url)
+        data = get(self.session, url)
         pm = re.search(r'window.code=(\d+);', data)
         code = pm.group(1)
 
@@ -243,7 +252,7 @@ class WXAPI(object):
                     大概是 300 秒，在此期间可以重新登录，但获取的联系人和群ID会改变
         @return     Bool: whether operation succeed
         """
-        data = get(self.redirect_uri)
+        data = get(self.session, self.redirect_uri)
         doc = xml.dom.minidom.parseString(data)
         root = doc.documentElement
 
@@ -286,9 +295,14 @@ class WXAPI(object):
         params = {
             'BaseRequest': self.base_request
         }
-        dic = post(url, params)
+        dic = post(self.session, url, params)
         self.User = dic['User']
         self.make_synckey(dic)
+
+        # add some group
+        for contact in dic['ContactList']:
+            if contact['UserName'][:2] == '@@':
+                self.addGroupIDList.append(contact['UserName'])
 
         return dic['BaseResponse']['Ret'] == 0
 
@@ -308,7 +322,7 @@ class WXAPI(object):
             "ToUserName": self.User['UserName'],
             "ClientMsgId": int(time.time())
         }
-        dic = post(url, params)
+        dic = post(self.session, url, params)
 
         return dic['BaseResponse']['Ret'] == 0
 
@@ -322,29 +336,26 @@ class WXAPI(object):
             '?pass_ticket=%s&skey=%s&r=%s' % (
                 self.pass_ticket, self.skey, int(time.time())
             )
-        dic = post(url, {})
+        dic = post(self.session, url, {})
 
         self.MemberCount = dic['MemberCount']
         self.MemberList = dic['MemberList']
-        ContactList = self.MemberList[:]
-        GroupList = self.GroupList[:]
-        PublicUsersList = self.PublicUsersList[:]
-        SpecialUsersList = self.SpecialUsersList[:]
+        self.ContactList = self.MemberList[:]
 
-        for i in xrange(len(ContactList) - 1, -1, -1):
-            Contact = ContactList[i]
-            if Contact['VerifyFlag'] & 8 != 0:  # 公众号/服务号
-                ContactList.remove(Contact)
-                self.PublicUsersList.append(Contact)
-            elif Contact['UserName'] in SpecialUsers:  # 特殊账号
-                ContactList.remove(Contact)
-                self.SpecialUsersList.append(Contact)
-            elif Contact['UserName'].find('@@') != -1:  # 群聊
-                ContactList.remove(Contact)
-                self.GroupList.append(Contact)
-            elif Contact['UserName'] == self.User['UserName']:  # 自己
-                ContactList.remove(Contact)
-        self.ContactList = ContactList
+        for i in xrange(len(self.MemberList) - 1, -1, -1):
+            contact = self.MemberList[i]
+            if contact['VerifyFlag'] & 8 != 0:  # 公众号/服务号
+                self.ContactList.remove(contact)
+                self.PublicUsersList.append(contact)
+            elif contact['UserName'] in SpecialUsers:  # 特殊账号
+                self.ContactList.remove(contact)
+                self.SpecialUsersList.append(contact)
+            elif contact['UserName'][:2] == '@@':  # 群聊
+                self.ContactList.remove(contact)
+                if contact['UserName'] not in self.addGroupIDList:
+                    self.addGroupIDList.append(contact['UserName'])
+            elif contact['UserName'] == self.User['UserName']:  # 自己
+                self.ContactList.remove(contact)
 
         return True
 
@@ -363,7 +374,7 @@ class WXAPI(object):
             "Count": len(gid_list),
             "List": [{"UserName": gid, "EncryChatRoomId": ""} for gid in gid_list]
         }
-        dic = post(url, params)
+        dic = post(self.session, url, params)
         return dic['ContactList']
 
     def synccheck(self):
@@ -388,7 +399,7 @@ class WXAPI(object):
             '_': int(time.time()),
         }
         url = self.wx_conf['API_synccheck'] + '?' + urllib.urlencode(params)
-        data = get(url)
+        data = get(self.session, url)
         reg = r'window.synccheck={retcode:"(\d+)",selector:"(\d+)"}'
         pm = re.search(reg, data)
         retcode = pm.group(1)
@@ -409,7 +420,7 @@ class WXAPI(object):
             'SyncKey': self.synckey_dic,
             'rr': ~int(time.time())
         }
-        dic = post(url, params)
+        dic = post(self.session, url, params)
 
         if dic['BaseResponse']['Ret'] == 0:
             self.make_synckey(dic)
@@ -423,7 +434,7 @@ class WXAPI(object):
         """
         url = self.wx_conf['API_webwxgetmsgimg'] + \
             '?MsgID=%s&skey=%s' % (msgid, self.skey)
-        data = get(url, api='webwxgetmsgimg')
+        data = get(self.session, url, api='webwxgetmsgimg')
         return data
 
     def webwxgetvoice(self, msgid):
@@ -434,7 +445,7 @@ class WXAPI(object):
         """
         url = self.wx_conf['API_webwxgetvoice'] + \
             '?msgid=%s&skey=%s' % (msgid, self.skey)
-        data = get(url, api='webwxgetvoice')
+        data = get(self.session, url, api='webwxgetvoice')
         return data
 
     def webwxgetvideo(self, msgid):
@@ -445,7 +456,7 @@ class WXAPI(object):
         """
         url = self.wx_conf['API_webwxgetvideo'] + \
             '?msgid=%s&skey=%s' % (msgid, self.skey)
-        data = get(url, api='webwxgetvideo')
+        data = get(self.session, url, api='webwxgetvideo')
         return data
 
     def webwxgeticon(self, id):
@@ -456,7 +467,7 @@ class WXAPI(object):
         """
         url = self.wx_conf['API_webwxgeticon'] + \
             '?username=%s&skey=%s' % (id, self.skey)
-        data = get(url, api='webwxgeticon')
+        data = get(self.session, url, api='webwxgeticon')
         return data
 
     def webwxgetheadimg(self, id):
@@ -467,7 +478,7 @@ class WXAPI(object):
         """
         url = self.wx_conf['API_webwxgetheadimg'] + \
             '?username=%s&skey=%s' % (id, self.skey)
-        data = get(url, api='webwxgetheadimg')
+        data = get(self.session, url, api='webwxgetheadimg')
         return data
 
     def webwxsendmsg(self, word, to='filehelper'):
@@ -492,33 +503,7 @@ class WXAPI(object):
                 "ClientMsgId": clientMsgId
             }
         }
-
-        print 'send in'
-        
-
-        # 此处用utils内的post方法会出现问题，导致无法成功发送信息
-
-        # 此处应该直接使用requests.post方法发送信息
-
-        # 在Demo版本中对于（包括文字，图片，表情等）信息/媒体的发送都是直接使用的requests.post
-        # 而没有直接使用封装的post方法，还未具体调试过，尚不知是什么错误
-
-        # 下面的api都应该修改后才能正常使用，在Demo中未进行测试，此次只对发送文字进行修改
-
-        # 原代码
-        # dic = post(url, params)
-
-        # 修改----------
-
-        headers = {'content-type': 'application/json; charset=UTF-8'}
-        # 请求头
-        data = json.dumps(params, ensure_ascii=False).encode('utf8')
-        # params
-        r = requests.post(url, data=data, headers=headers)
-        dic = r.json()
-
-        # ---------------
-
+        dic = post(self.session, url, params)
         return dic
 
     def webwxuploadmedia(self, file_path):
@@ -610,10 +595,13 @@ class WXAPI(object):
             'Cache-Control': 'no-cache',
         }
 
-        r = requests.post(url, data=multipart_encoder, headers=headers)
-        dic = json.loads(r.text)  #修复无法发送Media消息BUG
-        if dic['BaseResponse']['Ret'] == 0:
-            return dic
+        try:
+            r = self.session.post(url, data=multipart_encoder, headers=headers, timeout=5)
+            dic = json.loads(r.text)
+            if dic['BaseResponse']['Ret'] == 0:
+                return dic
+        except ReadTimeout:
+            echo('Timeout\n')
         return None
 
     def webwxsendmsgimg(self, user_id, media_id):
@@ -638,7 +626,7 @@ class WXAPI(object):
                 "ClientMsgId": clientMsgId
             }
         }
-        r = post(url, data_json)
+        dic = post(self.session, url, data_json)
         return dic['BaseResponse']['Ret'] == 0
 
     def webwxsendemoticon(self, user_id, media_id):
@@ -664,7 +652,7 @@ class WXAPI(object):
                 "ClientMsgId": clientMsgId
             }
         }
-        r = post(url, data_json)
+        dic = post(self.session, url, data_json)
         return dic['BaseResponse']['Ret'] == 0
 
     def webwxsendappmsg(self, user_id, data):
@@ -679,7 +667,7 @@ class WXAPI(object):
         clientMsgId = str(int(time.time() * 1000)) + \
             str(random.random())[:5].replace('.', '')
         content = ''.join([
-            "<appmsg appid='%s' sdkver=''>" % data['appid'], # 可使用其它AppID
+            "<appmsg appid='%s' sdkver=''>" % data['appid'],  # 可使用其它AppID
                 "<title>%s</title>" % data['title'],
                 "<des></des>",
                 "<action></action>",
@@ -707,7 +695,7 @@ class WXAPI(object):
             },
             "Scene": 0
         }
-        r = post(url, data_json)
+        dic = post(self.session, url, data_json)
         return dic['BaseResponse']['Ret'] == 0
 
     def webwxcreatechatroom(self, uid_arr):
@@ -723,12 +711,13 @@ class WXAPI(object):
             'MemberCount': len(uid_arr),
             'MemberList': [{'UserName': uid} for uid in uid_arr],
         }
-        dic = post(url, params)
-        return dic['BaseResponse']['Ret'] == 0
+        dic = post(self.session, url, params)
+        return dic
 
-    def webwxupdatechatroom(self, add_arr, del_arr, invite_arr):
+    def webwxupdatechatroom(self, g_id, add_arr, del_arr, invite_arr):
         """
         @brief      add/delete/invite member in chat group
+        @param      g_id        [uid: String]
         @param      add_arr     [uid: String]
         @param      del_arr     [uid: String]
         @param      invite_arr  [uid: String]
@@ -737,13 +726,13 @@ class WXAPI(object):
         url = self.wx_conf['API_webwxupdatechatroom'] + '?r=%s' % int(time.time())
         params = {
             'BaseRequest': self.base_request,
-            'ChatRoomName': '',
+            'ChatRoomName': g_id,
             'NewTopic': '',
             'AddMemberList': add_arr,
             'DelMemberList': del_arr,
             'InviteMemberList': invite_arr,
         }
-        dic = post(url, params)
+        dic = post(self.session, url, params)
         return dic['BaseResponse']['Ret'] == 0
 
     def webwxrevokemsg(self, msgid, user_id, client_msgid):
@@ -761,30 +750,30 @@ class WXAPI(object):
             'ToUserName': user_id,
             'ClientMsgId': client_msgid
         }
-        dic = post(url, params)
+        dic = post(self.session, url, params)
         return dic['BaseResponse']['Ret'] == 0
 
-    def webwxpushloginurl(self, uin):
-        """
-        @brief      push a login confirm alert to mobile device
-        @param      uin   String
-        @return     dic   Dict
-        """
-        url = self.wx_conf['API_webwxpushloginurl'] + '?uin=%s' % uin
-        dic = eval(get(url))
-        return dic
-
-    def association_login(self):
-        """
-        @brief      login without scan qrcode
-        @return     Bool: whether operation succeed
-        """
-        if self.uin != '':
-            dic = self.webwxpushloginurl(self.uin)
-            if dic['ret'] == '0':
-                self.uuid = dic['uuid']
-                return True
-        return False
+    # def webwxpushloginurl(self, uin):
+    #     """
+    #     @brief      push a login confirm alert to mobile device
+    #     @param      uin   String
+    #     @return     dic   Dict
+    #     """
+    #     url = self.wx_conf['API_webwxpushloginurl'] + '?uin=%s' % uin
+    #     dic = eval(get(self.session, url))
+    #     return dic
+    #
+    # def association_login(self):
+    #     """
+    #     @brief      login without scan qrcode
+    #     @return     Bool: whether operation succeed
+    #     """
+    #     if self.uin != '':
+    #         dic = self.webwxpushloginurl(self.uin)
+    #         if dic['ret'] == '0':
+    #             self.uuid = dic['uuid']
+    #             return True
+    #     return False
 
     def send_text(self, user_id, text):
         """
@@ -882,6 +871,8 @@ class WXAPI(object):
                         'RemarkName'    # 备注
                         'NickName'      # 微信昵称
                         'ShowName'      # Log显示用的
+                        # 添加更多信息：Alias,sex,Signature,Province,City
+                        # user_flag  0->yourself, 1->normal user, 2->special user, 3->unknown, 4-> public user
                     }
         """
         UnknownPeople = Constant.LOG_MSG_UNKNOWN_NAME + user_id
@@ -890,6 +881,15 @@ class WXAPI(object):
             'RemarkName': '',
             'NickName': '',
             'ShowName': '',
+
+            # add info 增加了一些信息的获取，此处可以根据wechatAPI的返回数据添加更多需要的信息
+            'Alias': '',
+            'Sex': 0,
+            'Signature': '',
+            'Province': '',
+            'City': '',
+
+            'user_flag': 3,
         }
         name['ShowName'] = UnknownPeople
 
@@ -898,22 +898,39 @@ class WXAPI(object):
             name['RemarkName'] = self.User['RemarkName']
             name['NickName'] = self.User['NickName']
             name['ShowName'] = name['NickName']
+            name['Sex'] = self.User['Sex']
+            name['user_flag'] = 0
         else:
-            # 联系人
+            # 联系人，公众号
             for member in self.MemberList:
                 if member['UserName'] == user_id:
                     r, n = member['RemarkName'], member['NickName']
                     name['RemarkName'] = r
                     name['NickName'] = n
                     name['ShowName'] = r if r else n
+
+                    # add
+                    name['Alias'] = member['Alias']
+                    name['Sex'] = member['Sex']
+                    name['Signature'] = member['Signature']
+                    name['Province'] = member['Province']
+                    name['City'] = member['City']
+                    if user_id == self.User['UserName']:
+                        name['user_flag'] = 0
+                    elif member['VerifyFlag'] & 8 != 0:
+                        name['user_flag'] = 4
+                    else:
+                        name['user_flag'] = 1
+
                     break
             # 特殊帐号
-            for member in self.SpecialUsersList:
-                if member['UserName'] == user_id:
-                    name['RemarkName'] = user_id
-                    name['NickName'] = user_id
-                    name['ShowName'] = user_id
-                    break
+            if user_id in self.wx_conf['SpecialUsers']:
+                name['RemarkName'] = user_id
+                name['NickName'] = user_id
+                name['ShowName'] = user_id
+
+                # add
+                name['user_flag'] = 2
 
         return name
 
@@ -997,3 +1014,8 @@ class WXAPI(object):
             if name == member['RemarkName'] or name == member['NickName']:
                 return member['UserName']
         return None
+
+    # add new api:
+    # 本来计划加入 添加好友，修改备注等API，
+    # 但是考虑到一切帐号的风险问题，且当前并不需要用到这些接口而暂时不添加
+

@@ -19,82 +19,26 @@ class WeChatMsgProcessor(object):
     Process fetched data
     """
 
-    def __init__(self, db):
-        self.db = db
+    def __init__(self, msg_db):
+
         self.wechat = None  # recieve `WeChat` class instance
                             # for call some wechat apis
 
-        # read config
-        cm = ConfigManager()
-        [self.upload_dir, self.data_dir, self.log_dir] = cm.setup_database()
+        self.msg_db = msg_db
 
-    def clean_db(self):
-        """
-        @brief clean database, delete table & create table
-        """
-        self.db.delete_table(Constant.TABLE_GROUP_LIST())
-        self.db.delete_table(Constant.TABLE_GROUP_USER_LIST())
-        self.db.create_table(Constant.TABLE_GROUP_MSG_LOG, Constant.TABLE_GROUP_MSG_LOG_COL)
-        self.db.create_table(Constant.TABLE_GROUP_LIST(), Constant.TABLE_GROUP_LIST_COL)
-        self.db.create_table(Constant.TABLE_GROUP_USER_LIST(), Constant.TABLE_GROUP_USER_LIST_COL)
-        self.db.create_table(Constant.TABLE_RECORD_ENTER_GROUP, Constant.TABLE_RECORD_ENTER_GROUP_COL)
-        self.db.create_table(Constant.TABLE_RECORD_RENAME_GROUP, Constant.TABLE_RECORD_RENAME_GROUP_COL)
+        self.msg_col = '''
+            MsgOrder integer primary key,
+            Time text,
+            FromNick text,
+            ToNick text,
+            content text
+        '''
+        self.user_type = ['normal', 'group', 'public', 'unknown']
 
-    def handle_wxsync(self, msg):
-        """
-        @brief      Recieve webwxsync message, saved into json
-        @param      msg  Dict: webwxsync msg
-        """
-        fn = time.strftime(Constant.LOG_MSG_FILE, time.localtime())
-        save_json(fn, msg, self.log_dir, 'a+')
-
-    def handle_group_list(self, group_list):
-        """
-        @brief      handle group list & saved in DB
-        @param      group_list  Array
-        """
-        fn = Constant.LOG_MSG_GROUP_LIST_FILE
-        save_json(fn, group_list, self.data_dir)
-        cols = [(
-            g['NickName'],
-            g['UserName'],
-            g['OwnerUin'],
-            g['MemberCount'],
-            g['HeadImgUrl']
-        ) for g in group_list]
-        self.db.insertmany(Constant.TABLE_GROUP_LIST(), cols)
-
-    def handle_group_member_list(self, group_id, member_list):
-        """
-        @brief      handle group member list & saved in DB
-        @param      member_list  Array
-        """
-        fn = group_id + '.json'
-        save_json(fn, member_list, self.data_dir)
-        cols = [(
-            group_id,
-            m['UserName'],
-            m['NickName'],
-            m['DisplayName'],
-            m['AttrStatus']
-        ) for m in member_list]
-        self.db.insertmany(Constant.TABLE_GROUP_USER_LIST(), cols)
-
-    def handle_group_list_change(self, new_group):
-        """
-        @brief      handle adding a new group & saved in DB
-        @param      new_group  Dict
-        """
-        self.handle_group_list([new_group])
-
-    def handle_group_member_change(self, group_id, member_list):
-        """
-        @brief      handle group member changes & saved in DB
-        @param      group_id  Dict
-        @param      member_list  Dict
-        """
-        self.db.delete(Constant.TABLE_GROUP_USER_LIST(), "RoomID", group_id)
-        self.handle_group_member_list(group_id, member_list)
+    def get_time_string(self, second=0):
+        if second:
+            return time.strftime('%Y-%m-%d,%H:%M:%S', time.localtime(second))
+        return time.strftime('%Y-%m-%d,%H:%M:%S', time.localtime(time.time()))
 
     def handle_group_msg(self, msg):
         """
@@ -112,75 +56,66 @@ class WeChatMsgProcessor(object):
                 Log.debug('rename file to %s' % new_name)
                 os.rename(msg[k], new_name)
                 msg[k] = new_name
+        # 上面代码功能为重命名群聊接收文件
 
-        if msg['msg_type'] == 10000:
-            # record member enter in group
-            m = re.search(r'邀请(.+)加入了群聊', msg['sys_notif'])
-            if m:
-                name = m.group(1)
-                col_enter_group = (
-                    msg['msg_id'],
-                    msg['group_name'],
-                    msg['from_user_name'],
-                    msg['to_user_name'],
-                    name,
-                    msg['time'],
-                )
-                self.db.insert(Constant.TABLE_RECORD_ENTER_GROUP, col_enter_group)
+        # 获取群ID
+        if msg['raw_msg']['FromUserName'][:2] == '@@':
+            g_id = msg['raw_msg']['FromUserName']
+        else:
+            g_id = msg['raw_msg']['ToUserName']
+        # add new group
+        # 貌似此步骤可以省略
+        if g_id not in self.wechat.addGroupIDList:
+            group = self.wechat.webwxbatchgetcontact([g_id])[0]
+            if group:
+                self.wechat.addGroupIDList.append(g_id)
+                self.wechat.GroupMemeberList['g_id'] = group['MemberList'][:]
+                group['MemberList'] = []
+                self.wechat.GroupList.append(group)
 
-            # record rename group
-            n = re.search(r'(.+)修改群名为“(.+)”', msg['sys_notif'])
-            if n:
-                people = n.group(1)
-                to_name = n.group(2)
-                col_rename_group = (
-                    msg['msg_id'],
-                    msg['group_name'],
-                    to_name,
-                    people,
-                    msg['time'],
-                )
-                self.db.insert(Constant.TABLE_RECORD_RENAME_GROUP, col_rename_group)
-                
-                # upadte group in GroupList
-                for g in self.wechat.GroupList:
-                    if g['UserName'] == msg['from_user_name']:
-                        g['NickName'] = to_name
-                        break
+                # 留做检查用，若出现则说明不应省略此处
+                echo('add group in msg handler\n')
 
-        # normal group message
-        col = (
-            msg['msg_id'],
-            msg['group_owner_uin'],
-            msg['group_name'],
-            msg['group_count'],
-            msg['from_user_name'],
-            msg['to_user_name'],
-            msg['user_attrstatus'],
-            msg['user_display_name'],
-            msg['user_nickname'],
-            msg['msg_type'],
-            msg['emoticon'],
-            msg['text'],
-            msg['image'],
-            msg['video'],
-            msg['voice'],
-            msg['link'],
-            msg['namecard'],
-            msg['location'],
-            msg['recall_msg_id'],
-            msg['sys_notif'],
-            msg['time'],
-            msg['timestamp']
-        )
-        self.db.insert(Constant.TABLE_GROUP_MSG_LOG, col)
+        wechat = self.wechat
+        if msg['raw_msg']['MsgType'] != wechat.wx_conf['MSGTYPE_TEXT']:
+            # 当前只对文本消息进行处理/提取出的地理位置消息也算在内
+            return
+
+        # 获取说话者ID
+        content = msg['raw_msg']['Content'].replace('&lt;', '<').replace('&gt;', '>')
+        from_id = content.split(':<br/>')[0]
+        from_usr = wechat.get_group_user_by_id(from_id, g_id)
+
+        # 查看是否创建表
+        t_group = wechat.get_group_by_id(g_id)
+        if t_group['NickName']:
+            table_name = 'groupz' + trans_unicode_into_int(trans_coding(t_group['NickName']))
+        else:
+            table_name = 'groupz' + trans_unicode_into_int(trans_coding('Group'))
+        self.msg_db.create_table(table_name, self.msg_col)
 
         text = msg['text']
-        if text and text[0] == '@':
-            n = trans_coding(text).find(u'\u2005')
-            name = trans_coding(text)[1:n].encode('utf-8')
-            if name in [self.wechat.User['NickName'], self.wechat.User['RemarkName']]:
-                self.handle_command(trans_coding(text)[n+1:].encode('utf-8'), msg)
+        r = re.findall(u'@[^\u2005]+\u2005', trans_coding(text))
+        op_flag = False
+        if r and from_id != wechat.User['UserName']:
+            usr_self = wechat.get_group_user_by_id(wechat.User['UserName'], g_id)
+            for m in r:
+                name = m[1:-1].encode('utf-8')
+                if name == usr_self['ShowName']:
+                    # 进入对于@自己 的消息的处理
+                    self.handle_command(re.sub(m, '', trans_coding(text)).encode('utf-8'),
+                                        msg, t_group, from_usr, table_name)
+                    op_flag = True
+                    break
+        if not op_flag:
+            col = (
+                None,
+                self.get_time_string(msg['raw_msg']['CreateTime']),
+                from_usr['NickName'],
+                'Group',
+                trans_coding(text).encode('utf-8')
+            )
+            self.msg_db.insert(table_name, col)
 
     def handle_user_msg(self, msg):
         """
@@ -189,113 +124,255 @@ class WeChatMsgProcessor(object):
         """
         wechat = self.wechat
 
+        if msg['raw_msg']['MsgType'] != wechat.wx_conf['MSGTYPE_TEXT']:
+            # 当前只对文本消息进行处理/提取出的地理位置消息也算在内
+            return
+
         text = trans_coding(msg['text']).encode('utf-8')
+
         uid = msg['raw_msg']['FromUserName']
+        tid = msg['raw_msg']['ToUserName']
 
         # 在这里可以测试API，添加对于个人消息的自动回复
 
-        flag = False
+        from_usr = wechat.get_user_by_id(uid)
+        to_usr = wechat.get_user_by_id(tid)
 
-        # 原代码
-        if text == 'test_revoke': # 撤回消息测试
-            dic = wechat.webwxsendmsg('这条消息将被撤回', uid)
-            wechat.revoke_msg(dic['MsgID'], uid, dic['LocalID'])
-        elif text == 'reply':
-            wechat.send_text(uid, '自动回复')
-
-        # msg记录了接收的消息的全部信息，具体可以将其打印后查看
-
-        # print msg
-
-        # 若通过Bot添加自动回复，此处可以调用wechat.bot.reply
-
-        # 可以如同Demo中那样通过链接获取自动回复内容
-
-        # 添加代码，以小冰为测试者，下面几句话是乱发信息后小冰常用回复，便于测试
-
-        elif text == '这乱七八糟的考我智商呢？':
-            flag = wechat.send_text(uid, '没错（自动回复')
-        elif text == '你这是宕机了？':
-            flag = wechat.send_text(uid, '你才宕机了（自动回复')
-        elif text == '？？？？':
-            flag = wechat.send_text(uid, '你有什么疑问？（自动回复')
-        elif text == '表示不懂，你先给我解释一下':
-            flag = wechat.send_text(uid, '我也不懂啊（自动回复')
-        elif text == '这。。我怎么看的懂':
-            flag = wechat.send_text(uid, '你好笨啊（自动回复')
-        elif text == '脸滚键盘，233':
-            flag = wechat.send_text(uid, '这叫手速（自动回复')
-        elif text == '告诉你多少遍了，不要用脸打字！':
-            flag = wechat.send_text(uid, '这叫手速（自动回复')
+        table_flag = True
+        table_name = ''
+        if from_usr['user_flag'] == 0:  # 自己在手机端发送消息
+            if to_usr['user_flag'] == 2:  # 特殊帐号内容不做记录
+                table_flag = False
+            elif to_usr['user_flag'] == 3:  # 未知用户内容，若与公众号聊天但未加其好友可能会出现
+                table_name = 'unknownz' + trans_unicode_into_int(trans_coding(to_usr['NickName']))
+            elif to_usr['user_flag'] == 4:  # 公众号内容，服务号也归入其中
+                table_name = 'publicz' + trans_unicode_into_int(trans_coding(to_usr['NickName']))
+            elif to_usr['user_flag'] == 1:  # 普通用户
+                table_name = 'normalz' + trans_unicode_into_int(trans_coding(to_usr['NickName']))
+            else:
+                echo('should never in\n')
+                table_flag = False
+                pass
+        elif from_usr['user_flag'] == 2:  # 特殊帐号内容不做记录
+            table_flag = False
+        elif from_usr['user_flag'] == 3:
+            table_name = 'unknownz' + trans_unicode_into_int(trans_coding(from_usr['NickName']))
+        elif from_usr['user_flag'] == 4:
+            table_name = 'publicz' + trans_unicode_into_int(trans_coding(from_usr['NickName']))
+        elif from_usr['user_flag'] == 1:
+            table_name = 'normalz' + trans_unicode_into_int(trans_coding(from_usr['NickName']))
         else:
+            echo('should never in\n')
+            table_flag = False
             pass
 
-        if flag:
-            print '自动回复成功'
+        if table_flag:
+            self.msg_db.create_table(table_name, self.msg_col)  # 如果不存在就会创建表
+
+        if uid != wechat.User['UserName']:
+            if text == 'test_revoke':
+                dic = wechat.webwxsendmsg('这条消息将被撤回', uid)
+                wechat.revoke_msg(dic['MsgID'], uid, dic['LocalID'])
+            elif text == 'reply':
+                wechat.send_text(uid, '不懂啊')
+
+            elif text == 'check_record_count':
+                if table_flag:
+                    msg_count = self.msg_db.select_max(table_name, 'MsgOrder')
+                    echo('接受消息数' + str(msg_count) + '\n')
+                    wechat.send_text(uid, str(msg_count))
+                else:
+                    wechat.send_text(uid, '没有啊!')
+            elif re.match(r'^check_record_\d+$', text):
+                msg_order = re.sub(r'^check_record_', '', text)
+                if table_flag:
+                    record = self.msg_db.select(table_name, 'MsgOrder', msg_order)
+                    if record:
+                        record_msg = 'MsgOrder:' + str(record[0]['MsgOrder']) + ' ' + \
+                                 'Time:' + record[0]['Time'] + ' ' + \
+                                 'From:' + record[0]['FromNick'] + ' ' + \
+                                 'To:' + record[0]['ToNick'] + ' ' + \
+                                 'content:' + record[0]['content']
+                        echo(record_msg + '\n')
+                        wechat.send_text(uid, record_msg)
+                    else:
+                        echo('no record\n')
+                        wechat.send_text(uid, '记录无效的！')
+                else:
+                    echo('no table\n')
+                    wechat.send_text(uid, '我们聊过吗？')
+
+            # msg记录了接收的消息的全部信息，具体可以将其打印后查看
+
+            # 若通过Bot添加自动回复，此处可以调用wechat.bot.xxx_reply
+
+            # 可以如同Demo中那样通过链接获取自动回复内容
+
+            # 上面可添加测试消息
+            else:
+                # 储存非测试消息并自动回复
+                if table_flag:
+                    cols = (
+                        None,
+                        self.get_time_string(msg['raw_msg']['CreateTime']),
+                        from_usr['NickName'],
+                        'myself',
+                        text
+                    )
+                    self.msg_db.insert(table_name, cols)
+
+                    flag = False
+                    if wechat.bot:
+                        r = wechat.bot.tuling_reply(text)
+                        if r:
+                            echo(r + '\n')
+                            flag = wechat.send_text(uid, r)
+                        else:
+                            pass
+                        if flag:
+                            echo('自动回复成功\n')
+                            reply_cols = (
+                                None,
+                                self.get_time_string(),
+                                'myself',
+                                from_usr['NickName'],
+                                r.encode('utf-8')
+                            )
+                            self.msg_db.insert(table_name, reply_cols)
+                        else:
+                            echo('自动回复失败\n')
+                else:
+                    echo('no table\n')
         else:
-            print '无回复/自动回复失败'
+            if table_flag:
+                cols = (
+                    None,
+                    self.get_time_string(msg['raw_msg']['CreateTime']),
+                    'myself',
+                    to_usr['NickName'],
+                    text
+                )
+                self.msg_db.insert(table_name, cols)
+            else:
+                echo('no table\n')
 
-
-        # -----------------
-
-        # 下面函数可修改自动回复群聊信息中@你 的消息
-
-    def handle_command(self, cmd, msg):
+    def handle_command(self, cmd, msg, group, from_usr, table):
         """
         @brief      handle msg of `@yourself cmd`
-        @param      cmd   String
-        @param      msg   Dict
+        @param      cmd   String    提取的@信息内容
+        @param      msg   Dict      信息的属性
         """
         wechat = self.wechat
 
-        # 下面为原代码中的测试样例，可以进行修改添加
+        g_id = group['UserName']
 
-        g_id = ''
-        for g in wechat.GroupList:
-            if g['NickName'] == msg['group_name']:
-                g_id = g['UserName']
+        from_id = from_usr['UserName']
 
-        cmd = cmd.strip()
-        if cmd == 'runtime':
-            wechat.send_text(g_id, wechat.get_run_time())
-        elif cmd == 'test_sendimg':
-            wechat.send_img(g_id, 'test/emotion/7.gif')
-        elif cmd == 'test_sendfile':
-            wechat.send_file(g_id, 'test/Data/upload/shake.wav')
-        elif cmd == 'test_bot':
-            # reply bot
-            # ---------
+        if from_id != wechat.User['UserName']:
+            if cmd == 'runtime':
+                wechat.send_text(g_id, wechat.get_run_time())
+            elif cmd == 'test_sendimg':
+                wechat.send_img(g_id, 'test/emotion/9.jpg')
+            elif cmd == 'test_sendfile':
+                wechat.send_file(g_id, 'test/emotion/9.jpg')
 
-            # 使用Bot对群聊@进行自动回复
-
-            if wechat.bot:
-                r = wechat.bot.reply(cmd)
-                if r:
-                    wechat.send_text(g_id, r)
+            elif cmd == 'check_record_count':
+                msg_count = self.msg_db.select_max(table, 'MsgOrder')
+                echo('接受消息数' + str(msg_count) + '\n')
+                wechat.send_text(g_id, str(msg_count))
+            elif re.match(r'^check_record_\d+$', cmd):
+                msg_order = re.sub(r'^check_record_', '', cmd)
+                record = self.msg_db.select(table, 'MsgOrder', msg_order)
+                if record:
+                    record_msg = 'MsgOrder:' + str(record[0]['MsgOrder']) + ' ' + \
+                                 'Time:' + record[0]['Time'] + ' ' + \
+                                 'From:' + record[0]['FromNick'] + ' ' + \
+                                 'To:' + record[0]['ToNick'] + ' ' + \
+                                 'content:' + record[0]['content']
+                    echo(record_msg + '\n')
+                    wechat.send_text(g_id, record_msg)
                 else:
-                    pass
-        elif cmd == 'test_emot':
-            img_name = [
-                '0.jpg', '1.jpeg', '2.gif', '3.jpg', '4.jpeg',
-                '5.gif', '6.gif', '7.gif', '8.jpg', '9.jpg'
-            ]
-            name = img_name[int(time.time()) % 10]
-            emot_path = os.path.join('test/emotion/', name)
-            wechat.send_emot(g_id, emot_path)
-        else:
-            pass
+                    wechat.send_text(g_id, '记录无效的！')
 
-        # --------------------
+            elif re.match(r'^check_m_count_.+$', cmd):
+                name = re.sub(r'^check_m_count_', '', cmd)
+                name_code = trans_unicode_into_int(trans_coding(trans_coding(name)))
+                found = False
+                for u_type in self.user_type:
+                    table = u_type + 'z' + name_code
+                    try:
+                        msg_count = self.msg_db.select_max(table, 'MsgOrder')
+                        wechat.send_text(g_id, str(msg_count) + ' type:' + u_type)
+                        found = True
+                        break
+                    except:
+                        pass
+                if not found:
+                    wechat.send_text(g_id, '不认识啊！')
+            elif re.match(r'^check_m_[0-9]+_[a-z]+_.+$', cmd):
+                msg_order = re.sub(r'^check_m_', '', cmd).split('_')[0]
+                usr_type = re.sub(r'^check_m_', '', cmd).split('_')[1]
+                usr = re.sub(r'^check_m_[0-9]+_[a-z]+_', '', cmd)
+                usr_n_code = usr_type + 'z' + trans_unicode_into_int(trans_coding(trans_coding(usr)))
+                try:
+                    record = self.msg_db.select(usr_n_code, 'MsgOrder', msg_order)
+                    if record:
+                        record_msg = 'MsgOrder:' + str(record[0]['MsgOrder']) + ' ' + \
+                                     'Time:' + record[0]['Time'] + ' ' + \
+                                     'From:' + record[0]['FromNick'] + ' ' + \
+                                     'To:' + record[0]['ToNick'] + ' ' + \
+                                     'content:' + record[0]['content']
+                        echo(record_msg + '\n')
+                        wechat.send_text(g_id, record_msg)
+                    else:
+                        wechat.send_text(g_id, '记录无效的！')
+                except:
+                    wechat.send_text(g_id, '不认识啊！')
+
+            # 上面为测试消息
+            else:
+                # 储存非测试消息
+                col = (
+                    None,
+                    self.get_time_string(msg['raw_msg']['CreateTime']),
+                    from_usr['NickName'],
+                    'Group',
+                    trans_coding(msg['text']).encode('utf-8')
+                )
+                self.msg_db.insert(table, col)
+
+                flag = False
+                if wechat.bot:
+                    if cmd.strip() == '':
+                        r = '@' + trans_coding(from_usr['ShowName']) + u'\u2005'.encode('utf-8') + '在呢'
+                        echo(r + u'\n')
+                        flag = wechat.send_text(g_id, r)
+                    else:
+                        t = wechat.bot.tuling_reply(cmd)
+                        if t:
+                            r = u'@' + trans_coding(from_usr['ShowName']) + u'\u2005' + t
+                            echo(r + u'\n')
+                            flag = wechat.send_text(g_id, r)
+                        else:
+                            pass
+                    if flag:
+                        echo('自动回复成功\n')
+                        reply_col = (
+                            None,
+                            self.get_time_string(),
+                            wechat.User['NickName'],
+                            'Group',
+                            r.encode('utf-8')
+                        )
+                        self.msg_db.insert(table, reply_col)
+                    else:
+                        echo('自动回复失败\n')
 
     def check_schedule_task(self):
+        # 可以添加一些定时函数
         # update group member list at 00:00 am every morning
         t = time.localtime()
         if t.tm_hour == 0 and t.tm_min <= 1:
-            # update group member
             Log.debug('update group member list everyday')
-            self.db.delete_table(Constant.TABLE_GROUP_LIST())
-            self.db.delete_table(Constant.TABLE_GROUP_USER_LIST())
-            self.db.create_table(Constant.TABLE_GROUP_LIST(), Constant.TABLE_GROUP_LIST_COL)
-            self.db.create_table(Constant.TABLE_GROUP_USER_LIST(), Constant.TABLE_GROUP_USER_LIST_COL)
             self.wechat.fetch_group_contacts()
 
