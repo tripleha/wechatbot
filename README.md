@@ -1,6 +1,12 @@
+<<<<<<< HEAD
 # welcome to https://github.com/tripleha/wechatbot
 
 WechatBot project transfer from https://github.com/urinx/weixinbot
+=======
+# WechatBot project transfer from https://github.com/urinx/weixinbot
+
+https://github.com/tripleha/wechatbot
+>>>>>>> 98e32d9df5b2d533b944fff01a78c78c2dcc3925
 
 目录结构:
 ```
