@@ -1,11 +1,5 @@
 # welcome to https://github.com/tripleha/wechatbot
 
-WechatBot project transfer from https://github.com/urinx/weixinbot
-<<<<<<< HEAD
-
-=======
->>>>>>> 85916d4757a0f6757073000e229f3e85cb2fd97d
-
 目录结构:
 ```
 .
@@ -34,6 +28,10 @@ WechatBot project transfer from https://github.com/urinx/weixinbot
     ├── bot.py
     └── wechat_msg_processor.py
 ```
+
+Thanks to: 
+https://github.com/urinx/weixinbot
+
 使用说明：
 
 首先需要引入一些第三方库，进入config，输入 pip install -r requirements.txt
@@ -52,10 +50,14 @@ WechatBot project transfer from https://github.com/urinx/weixinbot
 
 改善了代码结构，在对机器人回复内容进行请求时使用了协程库grequests，考虑到微信服务器对于端口的严格限制，所以在发送回复时并未进行多线程或协程操作。
 
+加入达到一定运行时长便自动退出功能，防止微信网页端封号
+
 添加了未测试的同意好友请求功能
 
 命令查看：
 
 check_record_count:查询当前聊天窗口对应的聊天记录数目
 check_record_%d:带参数，查询当前聊天窗口的具体某条记录
-
+runtime:查看运行时长
+check_add_user:查看当前好友请求
+add_user_%d:带参数，根据参数order通过某个好友请求
