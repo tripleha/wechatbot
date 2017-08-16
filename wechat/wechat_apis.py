@@ -386,7 +386,6 @@ class WXAPI(object):
                              1101 login otherwhere
                     selector: 0 nothing
                               2 message
-                              6 unkonwn
                               7 webwxsync
         """
         params = {
@@ -1019,3 +1018,24 @@ class WXAPI(object):
     # 本来计划加入 添加好友，修改备注等API，
     # 但是考虑到一切帐号的风险问题，且当前并不需要用到这些接口而暂时不添加
 
+    def accept_friend(self, user_name, ticket):
+        # 同意好友请求
+        url = self.wx_conf['API_webwxverifyuser'] + \
+            '?pass_ticket=%s' % self.pass_ticket
+        params = {
+            'BaseRequest': self.base_request,
+            'Opcode': 3,
+            'VerifyUserListSize': 1,
+            'VerifyUserList': [{
+                'Value': user_name,
+                'VerifyUserTicket': ticket,
+            }],
+            'VerifyContent': '',
+            'SceneListCount': 1,
+            'SceneList': [33],
+        }
+        try:
+            dic = post(self.session, url, params)
+            return dic['BaseResponse']['Ret'] == 0
+        except:
+            return False

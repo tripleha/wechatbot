@@ -6,6 +6,7 @@ from wechat.utils import *
 from config import Constant
 #---------------------------------------------------
 import random, time, json
+import grequests
 #===================================================
 
 
@@ -22,14 +23,31 @@ class Bot(object):
     def close_session(self):
         self.tuling_session.close()
 
-    def tuling_reply(self, text):
-        ''' 可以修改自动回复的查询链接，此为Bot的自动回复功能函数
-            @param  text：消息内容
-            @return: 自动回复信息
-        ''' 
-        APIKEY = Constant.BOT_TULING_API_KEY
-        api_url = Constant.BOT_TULING_API_URL % (APIKEY, text, '12345678')
+    def tuling_reply(self, text, user_id):
+        api_key = Constant.BOT_TULING_API_KEY
+        api_url = Constant.BOT_TULING_API_URL % (api_key, text, user_id)
         r = json.loads(get(self.tuling_session, api_url))
         if r.get('code') == 100000 and r.get('text') != Constant.BOT_TULING_BOT_REPLY:
             return r['text']
         return ''
+
+    def get_many_reply(self, need_reply_list):
+        def except_handler():
+            echo('request bot reply failed\n')
+
+        api_key = Constant.BOT_TULING_API_KEY
+        api_urls = [Constant.BOT_TULING_API_URL % (api_key, ne_reply['text'], ne_reply['user'])
+                    for ne_reply in need_reply_list]
+        reqs = [grequests.get(url) for url in api_urls]
+        responses = grequests.map(reqs, exception_handler=except_handler)
+        rs = map(lambda r: json.loads(r.content) if r else None, responses)
+        result = []
+        for rg in rs:
+            if rg:
+                if rg.get('code') == 100000 and rg.get('text'):
+                    result.append(trans_coding(rg['text']))
+                else:
+                    result.append(Constant.BOT_TULING_BOT_REPLY)
+            else:
+                result.append(Constant.BOT_TULING_BOT_REPLY)
+        return result

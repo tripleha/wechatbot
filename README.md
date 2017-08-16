@@ -1,12 +1,7 @@
-<<<<<<< HEAD
 # welcome to https://github.com/tripleha/wechatbot
 
 WechatBot project transfer from https://github.com/urinx/weixinbot
-=======
-# WechatBot project transfer from https://github.com/urinx/weixinbot
 
-https://github.com/tripleha/wechatbot
->>>>>>> 98e32d9df5b2d533b944fff01a78c78c2dcc3925
 
 目录结构:
 ```
@@ -49,4 +44,15 @@ https://github.com/tripleha/wechatbot
 数据库内容传输功能可在/wx_handler/wechat_msg_processor.py中添加
 
 其他说明可查看代码注释
+
+更新1.1：
+
+改善了代码结构，在对机器人回复内容进行请求时使用了协程库grequests，考虑到微信服务器对于端口的严格限制，所以在发送回复时并未进行多线程或协程操作。
+
+添加了未测试的同意好友请求功能
+
+命令查看：
+
+check_record_count:查询当前聊天窗口对应的聊天记录数目
+check_record_%d:带参数，查询当前聊天窗口的具体某条记录
 

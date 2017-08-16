@@ -4,3 +4,5 @@ requests
 requests_toolbelt
 pymysql
 sendgrid
+gevent
+grequests

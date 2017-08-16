@@ -41,18 +41,25 @@ class WeChat(WXAPI):
     def __init__(self, host='wx.qq.com'):
         super(WeChat, self).__init__(host)
 
-        # self.save_data_folder = ''  # 保存图片，语音，小视频的文件夹   # 用途？
-        # self.last_login = 0  # 上次退出的时间
-        self.time_out = 2  # 同步时间间隔（单位：秒）
-        # 此设置并不是越短越好
+        self.time_out = 2  # 同步时间间隔（单位：秒）此设置并不是越短越好
         self.start_time = time.time()
         self.msg_handler = None
         self.bot = None
 
         cm = ConfigManager()
-        self.save_data_folders = cm.get_wechat_media_dir()  # 上面存在同名无用变量
+        self.save_data_folders = cm.get_wechat_media_dir()
         self.log_mode = cm.get('setting', 'log_mode') == 'True'
         self.exit_code = 0
+
+        # 用于处理信息的类内全局
+        self.CommandList = []
+        self.DBStoreMSGList = []
+        self.GroupNeedReplyList = []
+        self.UserNeedReplyList = []
+        self.ReplyList = []
+        self.DBStoreBOTReplyList = []
+
+        self.AddUserList = []  # 等待添加为好友的用户
 
     def start(self):
         # echo(Constant.LOG_MSG_START)
@@ -125,7 +132,8 @@ class WeChat(WXAPI):
                 echo(Constant.LOG_MSG_QUIT_ON_PHONE)
                 break
             elif retcode == '0':
-                if selector == '2' or selector == '4':
+                if selector == '2' or selector == '4' or selector == '7' or selector == '6' or selector == '3':
+                    # 6 -> 新朋友，3 -> 自己信息的修改，
                     # 有新消息
                     r = self.webwxsync()
                     # 获取新消息的内容
@@ -139,44 +147,202 @@ class WeChat(WXAPI):
                             self.handle_mod(r)
                         except:
                             Log.error(traceback.format_exc())
-                elif selector == '7':
-                    # 进出聊天界面
-                    r = self.webwxsync()
                 elif selector == '0':
                     # 无更新
                     echo('no new info\n')
                     time.sleep(self.time_out)
-                elif selector == '3' or selector == '6':
-                    break
             else:
                 r = self.webwxsync()
                 Log.debug('webwxsync: %s\n' % json.dumps(r))
 
             # 执行定时任务
             if self.msg_handler:
-                self.msg_handler.check_schedule_task()
-
-            # 可以添加定时推送机器人
-            # 也可以修改机器人后在wechat_msg_processor中添加
-
-            if self.bot:
-                pass
+                flag = self.msg_handler.check_exit()
+                if flag:
+                    echo('达到运行时长，即将退出\n')
+                    break
 
     def get_run_time(self):
-        """
-        @brief      get how long this run
-        @return     String
-        """
-        totalTime = int(time.time() - self.start_time)
-        t = timedelta(seconds=totalTime)
+        total_time = int(time.time() - self.start_time)
+        t = timedelta(seconds=total_time)
         return '%s Day %s' % (t.days, t)
 
-    def stop(self):
-        """
-        @brief      Save some data and use shell to kill this process
-        """
-        # run(Constant.LOG_MSG_SNAPSHOT, self.snapshot)
+    def add_operate_list(self, msg, flag):
+        text = msg['text']
+        if flag:
+            if msg['FromUser']['UserName'][0:2] == '@@':
+                # 群 -> 我
+                if msg['FromUser']['NickName']:
+                    table = 'groupz' + trans_unicode_into_int(trans_coding(msg['FromUser']['NickName']))
+                else:
+                    # 无名称的群
+                    table = 'groupz' + trans_unicode_into_int(trans_coding('Group'))
+                self.msg_handler.msg_db.create_table(table, self.msg_handler.msg_col)
+                reply_flag = False
+                r = re.findall(u'@[^@\u2005]+\u2005', trans_coding(text))
+                if r:
+                    for m in r:
+                        name = m[1:-1].encode('utf-8')
+                        if name == msg['ToUser']['ShowName'] or name == self.User['NickName']:
+                            cmd = re.sub(m, '', trans_coding(text)).encode('utf-8')
+                            add_cmd = {}
+                            if cmd == 'check_record_count':
+                                add_cmd['func'] = 'check_count'
+                                add_cmd['time'] = msg['raw_msg']['CreateTime']
+                                add_cmd['table_name'] = table
+                                add_cmd['to_id'] = msg['FromUser']['UserName']
+                                self.CommandList.append(add_cmd)
+                            elif re.match(r'^check_record_\d+$', cmd):
+                                add_cmd['func'] = 'check_text'
+                                add_cmd['time'] = msg['raw_msg']['CreateTime']
+                                add_cmd['msg_order'] = int(re.sub(r'^check_record_', '', cmd))
+                                add_cmd['table_name'] = table
+                                add_cmd['to_id'] = msg['FromUser']['UserName']
+                                self.CommandList.append(add_cmd)
+                            elif cmd == 'runtime':
+                                add_cmd['func'] = 'check_time'
+                                add_cmd['time'] = msg['raw_msg']['CreateTime']
+                                add_cmd['to_id'] = msg['FromUser']['UserName']
+                                self.CommandList.append(add_cmd)
 
+                            # 好友添加命令测试
+                            elif cmd == 'check_add_user':
+                                add_cmd['func'] = 'check_add'
+                                add_cmd['time'] = msg['raw_msg']['CreateTime']
+                                add_cmd['to_id'] = msg['FromUser']['UserName']
+                                self.CommandList.append(add_cmd)
+                            elif re.match(r'^add_user_\d+$', cmd):
+                                add_cmd['func'] = 'add_user'
+                                add_cmd['time'] = msg['raw_msg']['CreateTime']
+                                add_cmd['add_order'] = int(re.sub(r'^add_user_', '', cmd))
+                                add_cmd['to_id'] = msg['FromUser']['UserName']
+                                self.CommandList.append(add_cmd)
+
+                            # 在上面定义命令
+                            else:
+                                # 下面为要自动回复内容
+                                add_reply = {}
+                                add_reply['text'] = cmd
+                                add_reply['time'] = msg['raw_msg']['CreateTime']
+                                add_reply['user'] = table
+                                add_reply['to_id'] = msg['FromUser']['UserName']
+                                add_reply['to_who'] = msg['FromWho']['ShowName']
+                                self.GroupNeedReplyList.append(add_reply)
+
+                                # 添加储存
+                                add_store = {}
+                                add_store['content'] = text
+                                add_store['time'] = msg['raw_msg']['CreateTime']
+                                add_store['from'] = msg['FromWho']['NickName']
+                                add_store['to'] = 'Group'
+                                add_store['table_name'] = table
+                                self.DBStoreMSGList.append(add_store)
+                            reply_flag = True
+                            break
+                if not reply_flag:
+                    add_store = {}
+                    add_store['content'] = text
+                    add_store['time'] = msg['raw_msg']['CreateTime']
+                    add_store['from'] = msg['FromWho']['NickName']
+                    add_store['to'] = 'Group'
+                    add_store['table_name'] = table
+                    self.DBStoreMSGList.append(add_store)
+            else:
+                # 人 -> 我
+                table_flag = True
+                if msg['FromUser']['user_flag'] == 2:  # 特殊帐号内容不做记录
+                    table_flag = False
+                elif msg['FromUser']['user_flag'] == 3:
+                    table = 'unknownz' + trans_unicode_into_int(trans_coding(msg['FromUser']['NickName']))
+                elif msg['FromUser']['user_flag'] == 4:
+                    table = 'publicz' + trans_unicode_into_int(trans_coding(msg['FromUser']['NickName']))
+                elif msg['FromUser']['user_flag'] == 1:
+                    table = 'normalz' + trans_unicode_into_int(trans_coding(msg['FromUser']['NickName']))
+                if table_flag:
+                    self.msg_handler.msg_db.create_table(table, self.msg_handler.msg_col)
+                    add_cmd = {}
+                    if text == 'check_record_count':
+                        add_cmd['func'] = 'check_count'
+                        add_cmd['time'] = msg['raw_msg']['CreateTime']
+                        add_cmd['table_name'] = table
+                        add_cmd['to_id'] = msg['FromUser']['UserName']
+                        self.CommandList.append(add_cmd)
+                    elif re.match(r'^check_record_\d+$', text):
+                        add_cmd['func'] = 'check_text'
+                        add_cmd['time'] = msg['raw_msg']['CreateTime']
+                        add_cmd['msg_order'] = int(re.sub(r'^check_record_', '', text))
+                        add_cmd['table_name'] = table
+                        add_cmd['to_id'] = msg['FromUser']['UserName']
+                        self.CommandList.append(add_cmd)
+                    elif text == 'runtime':
+                        add_cmd['func'] = 'check_time'
+                        add_cmd['time'] = msg['raw_msg']['CreateTime']
+                        add_cmd['to_id'] = msg['FromUser']['UserName']
+                        self.CommandList.append(add_cmd)
+
+                    # 好友添加命令测试
+                    elif text == 'check_add_user':
+                        add_cmd['func'] = 'check_add'
+                        add_cmd['time'] = msg['raw_msg']['CreateTime']
+                        add_cmd['to_id'] = msg['FromUser']['UserName']
+                        self.CommandList.append(add_cmd)
+                    elif re.match(r'^add_user_\d+$', text):
+                        add_cmd['func'] = 'add_user'
+                        add_cmd['time'] = msg['raw_msg']['CreateTime']
+                        add_cmd['add_order'] = int(re.sub(r'^add_user_', '', text))
+                        add_cmd['to_id'] = msg['FromUser']['UserName']
+                        self.CommandList.append(add_cmd)
+
+                    # 在上面定义命令
+                    else:
+                        # 下面为要自动回复内容
+                        add_reply = {}
+                        add_reply['text'] = text
+                        add_reply['time'] = msg['raw_msg']['CreateTime']
+                        add_reply['user'] = table
+                        add_reply['to_id'] = msg['FromUser']['UserName']
+                        self.UserNeedReplyList.append(add_reply)
+
+                        # 添加储存
+                        add_store = {}
+                        add_store['content'] = text
+                        add_store['time'] = msg['raw_msg']['CreateTime']
+                        add_store['from'] = msg['FromUser']['NickName']
+                        add_store['to'] = 'myself'
+                        add_store['table_name'] = table
+                        self.DBStoreMSGList.append(add_store)
+        else:
+            # 我 -> 群/人
+            table_flag = True
+            if msg['ToUser']['UserName'][0:2] == '@@':  # 群
+                if msg['ToUser']['NickName']:
+                    table = 'groupz' + trans_unicode_into_int(trans_coding(msg['FromUser']['NickName']))
+                else:
+                    # 无名称的群
+                    table = 'groupz' + trans_unicode_into_int(trans_coding('Group'))
+            else:
+                if msg['ToUser']['user_flag'] == 2:  # 特殊帐号内容不做记录
+                    table_flag = False
+                elif msg['ToUser']['user_flag'] == 3:  # 未知用户内容，若与公众号聊天但未加其好友可能会出现
+                    table = 'unknownz' + trans_unicode_into_int(trans_coding(msg['ToUser']['NickName']))
+                elif msg['ToUser']['user_flag'] == 4:  # 公众号内容，服务号也归入其中
+                    table = 'publicz' + trans_unicode_into_int(trans_coding(msg['ToUser']['NickName']))
+                elif msg['ToUser']['user_flag'] == 1:  # 普通用户
+                    table = 'normalz' + trans_unicode_into_int(trans_coding(msg['ToUser']['NickName']))
+            if table_flag:
+                self.msg_handler.msg_db.create_table(table, self.msg_handler.msg_col)
+                add_store = {}
+                add_store['content'] = text
+                add_store['time'] = msg['raw_msg']['CreateTime']
+                add_store['from'] = 'myself'
+                if table[0] == 'g':
+                    add_store['to'] = 'Group'
+                else:
+                    add_store['to'] = msg['ToUser']['NickName']
+                add_store['table_name'] = table
+                self.DBStoreMSGList.append(add_store)
+
+    def stop(self):
         echo(Constant.LOG_MSG_RUNTIME % self.get_run_time())
         # close database connect
         if self.msg_handler:
@@ -243,6 +409,11 @@ class WeChat(WXAPI):
         # ModContactCount: 变更联系人或群聊成员数目
         # ModContactList: 变更联系人或群聊列表，或群名称改变
         Log.debug('handle modify')
+
+        # 更新自己的信息
+        if r['Profile']['UserName']['Buff'] == self.User['UserName']:
+            self.User['NickName'] = r['Profile']['NickName']['Buff']
+
         for m in r['ModContactList']:
             if m['UserName'][:2] == '@@':
                 # group
@@ -278,22 +449,21 @@ class WeChat(WXAPI):
 
                         if m['VerifyFlag'] & 8 != 0:  # 公众号/服务号
                             for j in xrange(len(self.PublicUsersList)):
-                                if u_id == self.PublicUsersList[j]:
+                                if u_id == self.PublicUsersList[j]['UserName']:
                                     self.PublicUsersList[j] = m
                                     break
                         elif u_id in self.wx_conf['SpecialUsers']:  # 特殊帐号
                             for j in xrange(len(self.SpecialUsersList)):
-                                if u_id == self.SpecialUsersList[j]:
+                                if u_id == self.SpecialUsersList[j]['UserName']:
                                     self.SpecialUsersList[j] = m
                                     break
                         elif u_id != self.User['UserName']:
-                            self.ContactList.append(m)
                             for j in xrange(len(self.ContactList)):
-                                if u_id == self.ContactList[j]:
+                                if u_id == self.ContactList[j]['UserName']:
                                     self.ContactList[j] = m
                                     break
                         break
-                # if don't have then add it
+                # a new contact
                 if not in_list:
                     self.MemberList.append(m)
                     if m['VerifyFlag'] & 8 != 0:  # 公众号/服务号
@@ -305,11 +475,6 @@ class WeChat(WXAPI):
         self.handle_msg(r)
 
     def handle_msg(self, r):
-        """
-        @brief      Handle message
-                    对消息分类获取raw_msg，后处理消息
-        @param      r  Dict: message json
-        """
         Log.debug('handle message')
 
         n = len(r['AddMsgList'])
@@ -321,53 +486,78 @@ class WeChat(WXAPI):
         if self.log_mode:
             echo(Constant.LOG_MSG_NEW_MSG % n)
 
-        for msg in r['AddMsgList']:
+        for raw_msg in r['AddMsgList']:
 
-            msgType = msg['MsgType']
-            msgId = msg['MsgId']
-            content = msg['Content'].replace('&lt;', '<').replace('&gt;', '>')
-            raw_msg = None
+            msgType = raw_msg['MsgType']
+            msgId = raw_msg['MsgId']
+            content = raw_msg['Content'].replace('&lt;', '<').replace('&gt;', '>')
+            content = trans_coding(content).encode('utf-8')
 
+            rmsg = {}
+            reply_flag = False
+
+            # 获取收发人信息
+            from_id = raw_msg['FromUserName']
+            to_id = raw_msg['ToUserName']
+            if from_id[0:2] == '@@':
+                from_user = self.get_group_by_id(from_id)
+                if re.search(":<br/>", content, re.IGNORECASE):
+                    who_id = content.split(':<br/>')[0]
+                    from_who = self.get_group_user_by_id(who_id, from_id)
+                    rmsg['FromWho'] = from_who
+                to_user = self.get_group_user_by_id(to_id, from_id)
+                content_use = ':<br/>'.join(content.split(':<br/>')[1:])
+                reply_flag = True
+            elif to_id[0:2] == '@@':
+                from_user = self.get_group_user_by_id(from_id, to_id)
+                to_user = self.get_group_by_id(to_id)
+                echo(content + '\n')
+                content_use = ':<br/>'.join(content.split(':<br/>')[1:])
+            else:
+                from_user = self.get_user_by_id(from_id)
+                to_user = self.get_user_by_id(to_id)
+                content_use = content
+                if from_id != self.User['UserName']:
+                    reply_flag = True
+
+            rmsg['raw_msg'] = raw_msg
+            rmsg['FromUser'] = from_user
+            rmsg['ToUser'] = to_user
+
+            # 消息内容分类获取
             if msgType == self.wx_conf['MSGTYPE_TEXT']:
                 # 地理位置消息
-                if content.find('pictype=location') != -1:
-                    if msg['FromUserName'][0:2] == '@@':
-                        location = content.split(':<br/>')[1]
-                    else:
-                        location = content.split(':<br/>')[0]
-                    raw_msg = {
-                        'raw_msg': msg,
-                        'location': location,
-                        'text': location,
-                        'log': Constant.LOG_MSG_LOCATION % location
-                    }
+                if content_use.find('pictype=location') != -1:
+                    location = content_use.split(':<br/>')[0]
+                    rmsg['location'] = location
+                    rmsg['text'] = location
+                    rmsg['log'] = Constant.LOG_MSG_LOCATION % location
                 # 普通文本消息
                 else:
-                    tmp = content.split(':<br/>')
-                    text = ':<br/>'.join(tmp[min(len(tmp) - 1, 1):])
-                    raw_msg = {
-                        'raw_msg': msg,
-                        'text': text,
-                        'log': text.replace('<br/>', '\n')
-                    }
+                    rmsg['text'] = content_use
+                    rmsg['log'] = content_use
+
+                # 文字信息分类处理
+                self.add_operate_list(rmsg, reply_flag)
+
             elif msgType == self.wx_conf['MSGTYPE_IMAGE']:
                 data = self.webwxgetmsgimg(msgId)
                 fn = 'img_' + msgId + '.jpg'
                 dir = self.save_data_folders['webwxgetmsgimg']
                 path = save_file(fn, data, dir)
-                raw_msg = {'raw_msg': msg,
-                           'image': path,
-                           'log': Constant.LOG_MSG_PICTURE % path}
+                rmsg['text'] = '[图片]'
+                rmsg['image'] = path
+                rmsg['log'] = Constant.LOG_MSG_PICTURE % path
             elif msgType == self.wx_conf['MSGTYPE_VOICE']:
                 data = self.webwxgetvoice(msgId)
                 fn = 'voice_' + msgId + '.mp3'
                 dir = self.save_data_folders['webwxgetvoice']
                 path = save_file(fn, data, dir)
-                raw_msg = {'raw_msg': msg,
-                           'voice': path,
-                           'log': Constant.LOG_MSG_VOICE % path}
+                rmsg['text'] = '[音频]'
+                rmsg['voice'] = path
+                rmsg['log'] = Constant.LOG_MSG_VOICE % path
             elif msgType == self.wx_conf['MSGTYPE_SHARECARD']:
-                info = msg['RecommendInfo']
+                info = raw_msg['RecommendInfo']
                 card = Constant.LOG_MSG_NAME_CARD % (
                     info['NickName'],
                     info['Alias'],
@@ -378,191 +568,114 @@ class WeChat(WXAPI):
                     info['NickName'], info['Alias'], info['Province'],
                     info['City'], Constant.LOG_MSG_SEX_OPTION[info['Sex']]
                 )
-                raw_msg = {
-                    'raw_msg': msg,
-                    'namecard': namecard,
-                    'log': card
-                }
+                rmsg['text'] = '[名片]' + trans_coding(namecard).encode('utf-8')
+                rmsg['namecard'] = namecard
+                rmsg['log'] = card
             elif msgType == self.wx_conf['MSGTYPE_EMOTICON']:
-                url = search_content('cdnurl', content)
-                raw_msg = {'raw_msg': msg,
-                           'emoticon': url,
-                           'log': Constant.LOG_MSG_EMOTION % url}
+                url = search_content('cdnurl', content_use)
+                rmsg['text'] = '[表情]'
+                rmsg['emoticon'] = url
+                rmsg['log'] = Constant.LOG_MSG_EMOTION % url
             elif msgType == self.wx_conf['MSGTYPE_APP']:
                 card = ''
                 # 链接, 音乐, 微博
-                if msg['AppMsgType'] in [
+                if raw_msg['AppMsgType'] in [
                     self.wx_conf['APPMSGTYPE_AUDIO'],
                     self.wx_conf['APPMSGTYPE_URL'],
                     self.wx_conf['APPMSGTYPE_OPEN']
                 ]:
                     card = Constant.LOG_MSG_APP_LINK % (
-                        Constant.LOG_MSG_APP_LINK_TYPE[msg['AppMsgType']],
-                        msg['FileName'],
-                        search_content('des', content, 'xml'),
-                        msg['Url'],
-                        search_content('appname', content, 'xml')
+                        Constant.LOG_MSG_APP_LINK_TYPE[raw_msg['AppMsgType']],
+                        raw_msg['FileName'],
+                        search_content('des', content_use, 'xml'),
+                        raw_msg['Url'],
+                        search_content('appname', content_use, 'xml')
                     )
-                    raw_msg = {
-                        'raw_msg': msg,
-                        'link': msg['Url'],
-                        'log': card
-                    }
+                    rmsg['text'] = '[分享链接]'
+                    rmsg['link'] = raw_msg['Url']
+                    rmsg['log'] = card
                 # 图片
-                elif msg['AppMsgType'] == self.wx_conf['APPMSGTYPE_IMG']:
+                elif raw_msg['AppMsgType'] == self.wx_conf['APPMSGTYPE_IMG']:
                     data = self.webwxgetmsgimg(msgId)
                     fn = 'img_' + msgId + '.jpg'
                     dir = self.save_data_folders['webwxgetmsgimg']
                     path = save_file(fn, data, dir)
                     card = Constant.LOG_MSG_APP_IMG % (
                         path,
-                        search_content('appname', content, 'xml')
+                        search_content('appname', content_use, 'xml')
                     )
-                    raw_msg = {
-                        'raw_msg': msg,
-                        'image': path,
-                        'log': card
-                    }
+                    rmsg['text'] = '[图片]'
+                    rmsg['image'] = path
+                    rmsg['log'] = card
                 else:
-                    raw_msg = {
-                        'raw_msg': msg,
-                        'log': Constant.LOG_MSG_UNKNOWN_MSG % (msgType, content)
-                    }
+                    rmsg['text'] = ''
+                    rmsg['log'] = Constant.LOG_MSG_UNKNOWN_MSG % (msgType, content_use)
             elif msgType == self.wx_conf['MSGTYPE_STATUSNOTIFY']:
                 Log.info(Constant.LOG_MSG_NOTIFY_PHONE)
+                rmsg['text'] = '[状态通知]'
+                rmsg['log'] = Constant.LOG_MSG_NOTIFY_PHONE[:-1]
             elif msgType == self.wx_conf['MSGTYPE_MICROVIDEO']:
                 data = self.webwxgetvideo(msgId)
                 fn = 'video_' + msgId + '.mp4'
                 dir = self.save_data_folders['webwxgetvideo']
                 path = save_file(fn, data, dir)
-                raw_msg = {'raw_msg': msg,
-                           'video': path,
-                           'log': Constant.LOG_MSG_VIDEO % path}
+                rmsg['text'] = '[小视频]'
+                rmsg['video'] = path
+                rmsg['log'] = Constant.LOG_MSG_VIDEO % path
             elif msgType == self.wx_conf['MSGTYPE_RECALLED']:
-                recall_id = search_content('msgid', content, 'xml')
+                recall_id = search_content('msgid', content_use, 'xml')
                 text = Constant.LOG_MSG_RECALL
-                raw_msg = {
-                    'raw_msg': msg,
-                    'text': text,
-                    'recall_msg_id': recall_id,
-                    'log': text
-                }
+                rmsg['text'] = text
+                rmsg['recall_msg_id'] = recall_id
+                rmsg['log'] = text
             elif msgType == self.wx_conf['MSGTYPE_SYS']:
-                raw_msg = {
-                    'raw_msg': msg,
-                    'sys_notif': content,
-                    'log': content
-                }
+                rmsg['text'] = content_use
+                rmsg['sys_notif'] = content_use
+                rmsg['log'] = content_use
             elif msgType == self.wx_conf['MSGTYPE_VERIFYMSG']:
-                name = search_content('fromnickname', content)
-                raw_msg = {
-                    'raw_msg': msg,
-                    'log': Constant.LOG_MSG_ADD_FRIEND % name
+                name = search_content('fromnickname', content_use)
+                rmsg['text'] = '[添加好友请求]'
+                rmsg['log'] = Constant.LOG_MSG_ADD_FRIEND % name
+
+                # 好友自动同意在此处添加
+                count = len(self.AddUserList)
+                add_user = {
+                    'Order': count + 1,
+                    'UserName': raw_msg['RecommendInfo']['UserName'],
+                    'NickName': raw_msg['RecommendInfo']['NickName'],
+                    'Ticket': raw_msg['RecommendInfo']['Ticket']
                 }
+                self.AddUserList.append(add_user)
+                # 先添加与列表中，之后可根据命令提示来允许添加谁
+
             elif msgType == self.wx_conf['MSGTYPE_VIDEO']:
                 # 暂时无法对该类型进行处理，即视频信息
-                raw_msg = {
-                    'raw_msg': msg,
-                    'log': Constant.LOG_MSG_UNKNOWN_MSG % (msgType, content)
-                }
+                rmsg['text'] = '[视频消息]'
+                rmsg['log'] = Constant.LOG_MSG_UNKNOWN_MSG % (msgType, content_use)
             else:
-                raw_msg = {
-                    'raw_msg': msg,
-                    'log': Constant.LOG_MSG_UNKNOWN_MSG % (msgType, content)
-                }
-
-            # 此处对消息进行处理，具体请修改handle_user_msg与handle_group_msg
-
-            isGroupMsg = '@@' in msg['FromUserName']+msg['ToUserName']
-            if self.msg_handler and raw_msg:
-                if isGroupMsg:
-                    # handle group messages
-                    g_msg = self.make_group_msg(raw_msg)
-                    self.msg_handler.handle_group_msg(g_msg)  #
-                else:
-                    # handle personal messages
-                    self.msg_handler.handle_user_msg(raw_msg)  #
+                rmsg['text'] = ''
+                rmsg['log'] = Constant.LOG_MSG_UNKNOWN_MSG % (msgType, content_use)
 
             if self.log_mode:
-                self.show_msg(raw_msg)
+                self.show_msg(rmsg)
 
-    def make_group_msg(self, msg):
-        """
-        @brief      Package the group message for storage.
-        @param      msg  Dict: raw msg
-        @return     raw_msg Dict: packged msg
-        """
-        Log.debug('make group message')
-        raw_msg = {
-            'raw_msg': msg['raw_msg'],
-            'msg_id': msg['raw_msg']['MsgId'],
-            'group_owner_uin': '',
-            'group_name': '',
-            'group_count': '',
-            'from_user_name': msg['raw_msg']['FromUserName'],
-            'to_user_name': msg['raw_msg']['ToUserName'],
-            'user_attrstatus': '',
-            'user_display_name': '',
-            'user_nickname': '',
-            'msg_type': msg['raw_msg']['MsgType'],
-            'text': '',
-            'link': '',
-            'image': '',
-            'video': '',
-            'voice': '',
-            'emoticon': '',
-            'namecard': '',
-            'location': '',
-            'recall_msg_id': '',
-            'sys_notif': '',
-            'time': '',
-            'timestamp': '',
-            'log': '',
-        }
-        content = msg['raw_msg']['Content'].replace(
-            '&lt;', '<').replace('&gt;', '>')
-
-        group = None
-        src = None
-
-        if msg['raw_msg']['FromUserName'][:2] == '@@':
-            # 接收到来自群的消息
-            g_id = msg['raw_msg']['FromUserName']
-            group = self.get_group_by_id(g_id)
-
-            if re.search(":<br/>", content, re.IGNORECASE):
-                u_id = content.split(':<br/>')[0]
-                src = self.get_group_user_by_id(u_id, g_id)
-
-        elif msg['raw_msg']['ToUserName'][:2] == '@@':
-            # 自己发给群的消息
-            g_id = msg['raw_msg']['ToUserName']
-            u_id = msg['raw_msg']['FromUserName']
-            src = self.get_group_user_by_id(u_id, g_id)
-            group = self.get_group_by_id(g_id)
-
-        if src:
-            raw_msg['user_attrstatus'] = src['AttrStatus']
-            raw_msg['user_display_name'] = src['DisplayName']
-            raw_msg['user_nickname'] = src['NickName']
-        if group:
-            raw_msg['group_count'] = group['MemberCount']
-            raw_msg['group_owner_uin'] = group['OwnerUin']
-            raw_msg['group_name'] = group['ShowName']
-
-        raw_msg['timestamp'] = msg['raw_msg']['CreateTime']
-        t = time.localtime(float(raw_msg['timestamp']))
-        raw_msg['time'] = time.strftime("%Y-%m-%d %T", t)
-
-        for key in [
-            'text', 'link', 'image', 'video', 'voice',
-            'emoticon', 'namecard', 'location', 'log',
-            'recall_msg_id', 'sys_notif'
-        ]:
-            if key in msg:
-                raw_msg[key] = msg[key]
-
-        return raw_msg
+        try:
+            if self.msg_handler:
+                self.msg_handler.save_into_db(self.DBStoreMSGList)
+                self.msg_handler.handle_commands(self.CommandList)
+                self.msg_handler.get_bot_reply(self.GroupNeedReplyList, self.UserNeedReplyList)
+                self.msg_handler.auto_reply(self.ReplyList)
+                self.msg_handler.save_into_db(self.DBStoreBOTReplyList)
+        except:
+            traceback.print_exc()
+            Log.error(traceback.format_exc())
+        finally:
+            self.CommandList = []
+            self.DBStoreMSGList = []
+            self.GroupNeedReplyList = []
+            self.UserNeedReplyList = []
+            self.ReplyList = []
+            self.DBStoreBOTReplyList = []
 
     def show_msg(self, message):
         """
@@ -570,53 +683,45 @@ class WeChat(WXAPI):
         @param      message  Dict
         """
         msg = message
-        src = None
-        dst = None
+        src = msg['FromUser']
+        dst = msg['ToUser']
         group = None
+        msg_id = msg['raw_msg']['MsgId']
 
-        if msg and msg['raw_msg']:
-
-            content = msg['raw_msg']['Content']
-            content = content.replace('&lt;', '<').replace('&gt;', '>')
-            msg_id = msg['raw_msg']['MsgId']
-
-            if msg['raw_msg']['FromUserName'][:2] == '@@':
-                # 接收到来自群的消息
-                g_id = msg['raw_msg']['FromUserName']
-                group = self.get_group_by_id(g_id)
-
-                if re.search(":<br/>", content, re.IGNORECASE):
-                    u_id = content.split(':<br/>')[0]
-                    src = self.get_group_user_by_id(u_id, g_id)
-                    dst = {'ShowName': 'GROUP'}
-                else:
-                    u_id = msg['raw_msg']['ToUserName']
-                    src = {'ShowName': 'SYSTEM'}
-                    dst = self.get_group_user_by_id(u_id, g_id)
-            elif msg['raw_msg']['ToUserName'][:2] == '@@':
-                # 自己发给群的消息
-                g_id = msg['raw_msg']['ToUserName']
-                u_id = msg['raw_msg']['FromUserName']
-                group = self.get_group_by_id(g_id)
-                src = self.get_group_user_by_id(u_id, g_id)
-                dst = {'ShowName': 'GROUP'}
+        if msg['FromUser']['UserName'][0:2] == '@@':
+            group = msg['FromUser']
+            if 'FromWho' in msg:
+                src = msg['FromWho']
             else:
-                # 非群聊消息
-                src = self.get_user_by_id(msg['raw_msg']['FromUserName'])
-                dst = self.get_user_by_id(msg['raw_msg']['ToUserName'])
+                src = {'ShowName': 'SYSTEM'}
+        elif msg['ToUser']['UserName'][0:2] == '@@':
+            group = msg['ToUser']
+            dst = {'ShowName': 'GROUP'}
 
-            if group:
-                echo('%s |%s| %s -> %s: %s\n' % (
-                    msg_id,
-                    trans_emoji(group['ShowName']),
-                    trans_emoji(src['ShowName']),
-                    dst['ShowName'],
-                    trans_emoji(msg['log'])
-                ))
-            else:
-                echo('%s %s -> %s: %s\n' % (
-                    msg_id,
-                    trans_emoji(src['ShowName']),
-                    trans_emoji(dst['ShowName']),
-                    trans_emoji(msg['log'])
-                ))
+        if group:
+            echo('%s |%s| %s -> %s: %s\n' % (
+                msg_id,
+                trans_emoji(group['ShowName']),
+                trans_emoji(src['ShowName']),
+                dst['ShowName'],
+                trans_emoji(msg['log'])
+            ))
+        else:
+            echo('%s %s -> %s: %s\n' % (
+                msg_id,
+                trans_emoji(src['ShowName']),
+                trans_emoji(dst['ShowName']),
+                trans_emoji(msg['log'])
+            ))
+
+'''
+    msg应该包含的三个值：
+    raw_msg：原封不动的刷新返回数据
+    FromUser：发出用户的信息
+    ToUser：发向用户的信息
+    
+    扩展内容：
+    对于组：还需要一个FromWho表示发送该消息的用户信息
+    text：提取的文本内容，UTF-8格式
+    log：打印到控制台的内容
+'''
