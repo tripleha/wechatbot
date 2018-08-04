@@ -1,4 +1,6 @@
-# welcome to https://github.com/tripleha/wechatbot
+# 由于微信网页接口存在很多限制存在封号风险，且网页微信接口貌似已经被废弃，所以本项目废弃
+
+## welcome to https://github.com/tripleha/wechatbot
 
 目录结构:
 ```
